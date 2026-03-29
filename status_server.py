@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, List, Optional
+from collections import deque
+from typing import TYPE_CHECKING, Deque, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from adapter_restart import AdapterRestartCoordinator
@@ -13,6 +14,26 @@ if TYPE_CHECKING:
 from config_loader import BluetoothConfig
 
 logger = logging.getLogger("status")
+
+
+class _RingLogHandler(logging.Handler):
+    """In-memory ring buffer handler for dashboard log panes."""
+
+    def __init__(self, normal_buffer: Deque[str], raw_buffer: Deque[str]) -> None:
+        super().__init__(level=logging.INFO)
+        self.normal_buffer = normal_buffer
+        self.raw_buffer = raw_buffer
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            ts = time.strftime("%H:%M:%S", time.localtime(record.created))
+            msg = record.getMessage()
+            line = f"{ts} [{record.name}] {msg}"
+            self.normal_buffer.append(line)
+            if "[DEBUG:" in msg:
+                self.raw_buffer.append(line)
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # Embedded dashboard HTML
@@ -105,6 +126,36 @@ section-title {
   color: #475569; margin-bottom: 12px;
 }
 .ctrl-btns { display: flex; gap: 10px; flex-wrap: wrap; }
+/* ── Log panels ── */
+.logs-panel {
+  background: #1e293b; border: 1px solid #334155;
+  border-radius: 12px; padding: 16px; margin-bottom: 14px;
+}
+.logs-title {
+  font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #475569;
+}
+.logs-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 10px; flex-wrap: wrap;
+}
+.switch {
+  font-size: 0.72rem; color: #cbd5e1;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.logbox {
+  background: #0b1220;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  height: 180px;
+  overflow: auto;
+  padding: 8px;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+}
+.logbox.raw { border-color: #1d4ed8; }
 /* ── Toast message ── */
 #toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
@@ -135,12 +186,28 @@ section-title {
 <div class="controls">
   <div class="controls-title">进程控制</div>
   <div class="ctrl-btns">
+    <button class="btn btn-blue"   onclick="doUpdateFromGit()">拉取 GitHub 更新并重启</button>
     <button class="btn btn-orange" onclick="doRestartService()">重启进程</button>
     <button class="btn btn-red"    onclick="doRebootPi()">重启树莓派</button>
   </div>
 </div>
 
 <div class="grid" id="grid"></div>
+
+<div class="logs-panel">
+  <div class="logs-toolbar">
+    <div class="logs-title">运行日志</div>
+    <label class="switch">
+      <input type="checkbox" id="toggle-raw" onchange="toggleRawPane()">
+      显示原始报文（DEBUG）
+    </label>
+  </div>
+  <div id="normal-log" class="logbox">暂无日志</div>
+  <div id="raw-wrap" style="display:none; margin-top:10px;">
+    <div class="logs-title" style="margin-bottom:8px;">原始报文</div>
+    <div id="raw-log" class="logbox raw">暂无原始报文</div>
+  </div>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -154,6 +221,8 @@ const STATE_LABELS = {
 };
 
 let _actionLock = false;
+let _lastNormalLogs = '';
+let _lastRawLogs = '';
 
 function toast(msg, ms=3000) {
   const el = document.getElementById('toast');
@@ -174,6 +243,24 @@ function fmtSec(s) {
   if (s <= 0)  return '现在可用';
   if (s < 60)  return s.toFixed(0) + 's 后可用';
   return (s / 60).toFixed(1) + 'min 后可用';
+}
+
+function toggleRawPane() {
+  const checked = document.getElementById('toggle-raw').checked;
+  document.getElementById('raw-wrap').style.display = checked ? 'block' : 'none';
+}
+
+function setLogLines(elId, lines, key) {
+  const el = document.getElementById(elId);
+  const text = lines && lines.length ? lines.join('\n') : (key === 'raw' ? '暂无原始报文' : '暂无日志');
+  const old = key === 'raw' ? _lastRawLogs : _lastNormalLogs;
+  if (old === text) return;
+
+  const nearBottom = (el.scrollTop + el.clientHeight + 8) >= el.scrollHeight;
+  el.textContent = text;
+  if (key === 'raw') _lastRawLogs = text;
+  else _lastNormalLogs = text;
+  if (nearBottom) el.scrollTop = el.scrollHeight;
 }
 
 function renderBluetooth(bt) {
@@ -258,6 +345,13 @@ function doRestartService() {
     '确认重启 yokuli 进程？\n\n进程将立即重启，网页会短暂无响应后自动恢复。',
   );
 }
+function doUpdateFromGit() {
+  postAction(
+    {action:'update_from_git'},
+    '确认拉取 GitHub main 分支更新并重启？\n\n将执行：git fetch && git pull(main) && ./auto_launch restart',
+    '二次确认：如果有本地未提交改动，可能导致更新失败。确定继续吗？'
+  );
+}
 function doRebootPi() {
   postAction(
     {action:'reboot_pi'},
@@ -273,6 +367,8 @@ async function poll() {
     const data = await r.json();
     document.getElementById('grid').innerHTML = data.devices.map(renderCard).join('');
     if (data.bluetooth) renderBluetooth(data.bluetooth);
+    setLogLines('normal-log', data.logs || [], 'normal');
+    setLogLines('raw-log', data.raw_logs || [], 'raw');
     document.getElementById('ts').textContent =
       '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12:false});
   } catch(e) {
@@ -312,12 +408,16 @@ class StatusServer:
         self.bt_config = bt_config
         self.coordinator = coordinator
         self._server: Optional[asyncio.AbstractServer] = None
+        self._dashboard_logs: Deque[str] = deque(maxlen=180)
+        self._dashboard_raw_logs: Deque[str] = deque(maxlen=180)
+        self._ring_handler: Optional[_RingLogHandler] = None
 
     # ── Snapshot ────────────────────────────────────────────────────────────
 
     def _snapshot(self) -> dict:
         now = time.time()
         coord = self.coordinator
+        merged_raw: List[Tuple[float, str]] = []
         if coord is not None and coord._last_restart_time > 0:
             last_ago: Optional[float] = now - coord._last_restart_time
             cooldown_remaining = max(
@@ -326,6 +426,15 @@ class StatusServer:
         else:
             last_ago = None
             cooldown_remaining = 0.0
+
+        for device in self.devices:
+            merged_raw.extend(getattr(device, "raw_packets", []))
+        merged_raw.sort(key=lambda x: x[0])
+        raw_logs = [line for _, line in merged_raw[-180:]]
+        if self._dashboard_raw_logs:
+            # Keep non-BLE DEBUG lines if present, while avoiding unbounded growth.
+            raw_logs.extend(list(self._dashboard_raw_logs)[-40:])
+            raw_logs = raw_logs[-180:]
 
         return {
             "devices": [
@@ -347,11 +456,14 @@ class StatusServer:
                 "last_restart_ago": round(last_ago, 1) if last_ago is not None else None,
                 "cooldown_remaining": round(cooldown_remaining, 1),
             },
+            "logs": list(self._dashboard_logs),
+            "raw_logs": raw_logs,
         }
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
+        self._install_ring_logger()
         self._server = await asyncio.start_server(
             self._handle, "0.0.0.0", self.port
         )
@@ -361,6 +473,20 @@ class StatusServer:
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
+        self._remove_ring_logger()
+
+    def _install_ring_logger(self) -> None:
+        if self._ring_handler is not None:
+            return
+        handler = _RingLogHandler(self._dashboard_logs, self._dashboard_raw_logs)
+        logging.getLogger().addHandler(handler)
+        self._ring_handler = handler
+
+    def _remove_ring_logger(self) -> None:
+        if self._ring_handler is None:
+            return
+        logging.getLogger().removeHandler(self._ring_handler)
+        self._ring_handler = None
 
     # ── HTTP handler ─────────────────────────────────────────────────────────
 
@@ -464,6 +590,11 @@ class StatusServer:
             logger.info("[action] restart_service triggered")
             return {"ok": True, "message": "进程重启中，1 秒后执行"}
 
+        if action == "update_from_git":
+            asyncio.create_task(self._do_update_from_git())
+            logger.info("[action] update_from_git triggered")
+            return {"ok": True, "message": "开始拉取 GitHub main 更新，完成后自动重启"}
+
         if action == "reboot_pi":
             asyncio.create_task(self._do_reboot_pi())
             logger.info("[action] reboot_pi triggered")
@@ -524,3 +655,27 @@ class StatusServer:
             await asyncio.wait_for(proc.wait(), timeout=10.0)
         except Exception as exc:
             logger.error(f"Reboot failed: {exc}")
+
+    async def _do_update_from_git(self) -> None:
+        """
+        Pull latest code from GitHub main branch and restart via auto_launch.
+        """
+        await asyncio.sleep(1.0)
+        logger.info("Updating from GitHub main and restarting ...")
+        cmd = "git fetch origin main && git pull --ff-only origin main && ./auto_launch restart"
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+            if proc.returncode != 0:
+                logger.error(
+                    f"Update from git failed ({proc.returncode}): "
+                    f"{(err or out).decode(errors='replace').strip()}"
+                )
+            else:
+                logger.info("Update from git completed successfully.")
+        except Exception as exc:
+            logger.error(f"Update from git failed: {exc}")
