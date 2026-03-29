@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import List, Optional
 
@@ -77,7 +78,7 @@ class MpptDevice(BaseBleDevice):
             raise RuntimeError("Client not connected")
 
         # 给设备一点缓冲时间
-        await self._sleep_safe(1.0)
+        await asyncio.sleep(1.0)
 
         self.log("Sending unlock command ...")
         await self.client.write_gatt_char(
@@ -118,23 +119,17 @@ class MpptDevice(BaseBleDevice):
         }
 
     def _to_signalk(self, parsed: dict) -> List[dict]:
-        """Convert MPPT parsed data to Signal K path/value pairs."""
+        """Convert MPPT parsed data to Signal K path/value pairs.
+
+        Strategy A: coulometer is the authoritative source for battery voltage
+        and state of charge, so those paths are intentionally omitted here.
+        MPPT contributes charging current, temperature, and all solar paths.
+        """
         values: List[dict] = []
-        if "bat_v" in parsed:
-            values.append({
-                "path": "electrical.batteries.house.voltage",
-                "value": parsed["bat_v"],
-            })
         if "bat_a" in parsed:
             values.append({
                 "path": "electrical.batteries.house.current",
                 "value": parsed["bat_a"],
-            })
-        if "soc" in parsed:
-            # Device returns 0-100 integer; Signal K expects 0.0-1.0
-            values.append({
-                "path": "electrical.batteries.house.capacity.stateOfCharge",
-                "value": parsed["soc"] / 100.0,
             })
         if "temp_c" in parsed:
             # Signal K expects temperature in Kelvin
@@ -158,8 +153,3 @@ class MpptDevice(BaseBleDevice):
                 "value": parsed["pv_w"],
             })
         return values
-
-    async def _sleep_safe(self, seconds: float) -> None:
-        # 只是包一层，后面要扩展 stop 逻辑更方便
-        import asyncio
-        await asyncio.sleep(seconds)

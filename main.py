@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from config_loader import load_config
 from devices.coulometer import CoulometerDevice
@@ -9,8 +10,18 @@ from signalk_sender import SignalKTcpServer
 async def main():
     config = load_config("config.yaml")
 
+    log_level = getattr(logging, config.app.log_level.upper(), logging.INFO)
+    if config.app.enable_debug_log:
+        log_level = logging.DEBUG
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     ble_connect_lock = asyncio.Lock()
-    tasks = []
+    tasks: list = []
+    signalk_servers: list = []
 
     for key, device_cfg in config.devices.items():
         if not device_cfg.enabled:
@@ -21,7 +32,7 @@ async def main():
         elif key == "mppt":
             device = MpptDevice(config, device_cfg)
         else:
-            print(f"Unknown device key: {key}, skipping.")
+            logging.warning(f"Unknown device key: {key}, skipping.")
             continue
 
         signalk = SignalKTcpServer(
@@ -33,13 +44,23 @@ async def main():
         device.signalk = signalk
         device.ble_connect_lock = ble_connect_lock
 
+        signalk_servers.append(signalk)
         tasks.append(asyncio.create_task(device.run(), name=key))
 
     if not tasks:
-        print("No enabled devices found.")
+        logging.info("No enabled devices found.")
         return
 
-    await asyncio.gather(*tasks)
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        logging.info("Shutting down ...")
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for server in signalk_servers:
+            await server.stop()
+        logging.info("Shutdown complete.")
 
 
 if __name__ == "__main__":

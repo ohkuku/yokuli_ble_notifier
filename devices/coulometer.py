@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 from devices.base import BaseBleDevice
@@ -112,7 +113,7 @@ class CoulometerDevice(BaseBleDevice):
             return result if result else None
 
         except Exception as e:
-            self.log(f"parse_frame error: {e}")
+            self.log(f"parse_frame error: {e}", logging.WARNING)
             return None
 
     def _to_signalk(self, parsed: dict) -> List[dict]:

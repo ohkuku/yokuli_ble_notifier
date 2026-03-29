@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Optional
 
-from bleak import BleakClient
+from bleak import BleakClient, BleakScanner
 
 from config_loader import DeviceConfig, Config
 from signalk_sender import SignalKTcpServer
+
+_MAX_BACKOFF_SECONDS = 60.0
 
 
 class DeviceState(str, Enum):
@@ -32,13 +35,16 @@ class BaseBleDevice(ABC):
         self.fail_count = 0
         self.last_data_time = 0.0
         self._stop_event = asyncio.Event()
+        self._disconnected_event = asyncio.Event()
 
         self.signalk: Optional[SignalKTcpServer] = None
         self._pending_signalk: Optional[List[dict]] = None
         self.ble_connect_lock: Optional[asyncio.Lock] = None
 
-    def log(self, message: str) -> None:
-        print(f"[{self.config.key}] {message}")
+        self._logger = logging.getLogger(device_config.key)
+
+    def log(self, message: str, level: int = logging.INFO) -> None:
+        self._logger.log(level, message)
 
     def _queue_signalk(self, values: List[dict]) -> None:
         """Called by subclasses after parsing data to stage Signal K updates."""
@@ -59,11 +65,14 @@ class BaseBleDevice(ABC):
             return 999999.0
         return time.time() - self.last_data_time
 
+    def _on_ble_disconnect(self, client: BleakClient) -> None:
+        """Bleak disconnection callback — signals the run loop to reconnect immediately."""
+        if not self._stop_event.is_set():
+            self._logger.info("Device disconnected (BLE callback)")
+            self._disconnected_event.set()
+
     async def connect(self) -> None:
         # Clean up any stale client before attempting a new connection.
-        # Without this, a crashed BleakClient object stays alive and BlueZ
-        # may still consider the device connected, causing the next attempt
-        # to fail immediately.
         if self.client is not None:
             try:
                 await asyncio.wait_for(self.client.disconnect(), timeout=3.0)
@@ -72,27 +81,39 @@ class BaseBleDevice(ABC):
             self.client = None
 
         self.state = DeviceState.CONNECTING
-        self.log(f"Connecting to {self.config.mac} ...")
+        self._logger.info(f"Scanning for {self.config.mac} ...")
+
+        async def _do_connect() -> None:
+            device = await BleakScanner.find_device_by_address(
+                self.config.mac, timeout=10.0
+            )
+            if device is None:
+                raise RuntimeError(f"Device not found: {self.config.mac}")
+            self._logger.info(f"Found: {device.name or 'unknown'}, connecting ...")
+            self.client = BleakClient(
+                device,
+                timeout=20.0,
+                disconnected_callback=self._on_ble_disconnect,
+            )
+            await self.client.connect()
 
         if self.ble_connect_lock is not None:
             async with self.ble_connect_lock:
-                self.client = BleakClient(self.config.mac, timeout=20.0)
-                await self.client.connect()
+                await _do_connect()
         else:
-            self.client = BleakClient(self.config.mac, timeout=20.0)
-            await self.client.connect()
+            await _do_connect()
 
         self.state = DeviceState.CONNECTED
-        self.log("Connected.")
+        self._logger.info("Connected.")
 
     async def disconnect(self) -> None:
         if self.client is not None:
             try:
                 if self.client.is_connected:
                     await asyncio.wait_for(self.client.disconnect(), timeout=5.0)
-                    self.log("Disconnected.")
+                    self._logger.info("Disconnected.")
             except Exception as e:
-                self.log(f"Disconnect error: {e}")
+                self._logger.warning(f"Disconnect error: {e}")
 
         self.client = None
         self.state = DeviceState.DISCONNECTED
@@ -102,7 +123,7 @@ class BaseBleDevice(ABC):
             raise RuntimeError("Client is not connected")
 
         for uuid in self.config.notify_uuids:
-            self.log(f"Starting notify on {uuid}")
+            self._logger.info(f"Starting notify on {uuid}")
             handler = self._make_notify_handler(uuid)
             await self.client.start_notify(uuid, handler)
 
@@ -114,7 +135,7 @@ class BaseBleDevice(ABC):
         short = uuid[-8:]
 
         def debug_handler(characteristic, data: bytearray) -> None:
-            self.log(f"[DEBUG:{short}] {data.hex()}")
+            self._logger.debug(f"[{short}] {data.hex()}")
             self.notification_handler(characteristic, data)
 
         return debug_handler
@@ -131,6 +152,7 @@ class BaseBleDevice(ABC):
 
     async def run(self) -> None:
         while not self._stop_event.is_set():
+            self._disconnected_event.clear()
             try:
                 await self.connect()
                 await self.start_notifications()
@@ -140,22 +162,22 @@ class BaseBleDevice(ABC):
                 self.mark_data_received()
                 self.state = DeviceState.RUNNING
 
-                self.log("Running.")
+                self._logger.info("Running.")
                 await self.run_connected_loop()
 
             except asyncio.CancelledError:
-                self.log("Cancelled.")
+                self._logger.info("Cancelled.")
                 break
 
             except Exception as e:
                 self.fail_count += 1
-                self.log(f"Error (fail #{self.fail_count}): {e}")
+                self._logger.error(f"Error (fail #{self.fail_count}): {e}")
 
             finally:
                 try:
                     await self.on_before_disconnect()
                 except Exception as e:
-                    self.log(f"on_before_disconnect error: {e}")
+                    self._logger.warning(f"on_before_disconnect error: {e}")
 
                 try:
                     await self.stop_notifications()
@@ -167,12 +189,19 @@ class BaseBleDevice(ABC):
             if self._stop_event.is_set():
                 break
 
+            # Exponential backoff: base * 2^(fail-1), capped at _MAX_BACKOFF_SECONDS.
+            backoff = min(
+                self.config.reconnect_delay_seconds * (2 ** (self.fail_count - 1)),
+                _MAX_BACKOFF_SECONDS,
+            )
             self.state = DeviceState.BACKOFF
-            self.log(f"Backing off for {self.config.reconnect_delay_seconds}s ...")
-            await asyncio.sleep(self.config.reconnect_delay_seconds)
+            self._logger.info(
+                f"Backing off {backoff:.0f}s (fail #{self.fail_count}) ..."
+            )
+            await asyncio.sleep(backoff)
 
         self.state = DeviceState.STOPPED
-        self.log("Stopped.")
+        self._logger.info("Stopped.")
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -182,8 +211,15 @@ class BaseBleDevice(ABC):
         if self.client is None:
             raise RuntimeError("Client is not connected")
 
-        while self.client.is_connected and not self._stop_event.is_set():
-            await asyncio.sleep(1)
+        while not self._stop_event.is_set():
+            await asyncio.sleep(1.0)
+
+            # Check the disconnect callback event first (faster than polling is_connected).
+            if self._disconnected_event.is_set():
+                raise ConnectionError("Device disconnected")
+
+            if not self.client.is_connected:
+                raise ConnectionError("Device disconnected")
 
             age = self.seconds_since_last_data()
             if age > self.config.watchdog_timeout_seconds:
