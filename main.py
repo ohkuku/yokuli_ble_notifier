@@ -33,6 +33,11 @@ async def main():
 
         tasks.append(asyncio.create_task(device.run(), name=key))
 
+        # Stagger BLE connection attempts to avoid BlueZ "Operation already
+        # in progress" errors when multiple devices connect simultaneously.
+        if len(tasks) < sum(1 for d in config.devices.values() if d.enabled):
+            await asyncio.sleep(5)
+
     if not tasks:
         print("No enabled devices found.")
         return
