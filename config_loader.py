@@ -9,6 +9,7 @@ import yaml
 class AppConfig:
     vessel_id: str
     log_level: str
+    enable_debug_log: bool = False
 
 
 @dataclass
@@ -85,6 +86,7 @@ def load_config(path: str = "config.yaml") -> Config:
     app = AppConfig(
         vessel_id=str(_require(app_raw, "vessel_id")),
         log_level=str(_require(app_raw, "log_level")),
+        enable_debug_log=bool(app_raw.get("enable_debug_log", False)),
     )
 
     bluetooth = BluetoothConfig(

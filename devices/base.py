@@ -103,7 +103,21 @@ class BaseBleDevice(ABC):
 
         for uuid in self.config.notify_uuids:
             self.log(f"Starting notify on {uuid}")
-            await self.client.start_notify(uuid, self.notification_handler)
+            handler = self._make_notify_handler(uuid)
+            await self.client.start_notify(uuid, handler)
+
+    def _make_notify_handler(self, uuid: str):
+        """Return a notification callback, optionally wrapped with debug logging."""
+        if not self.app_config.app.enable_debug_log:
+            return self.notification_handler
+
+        short = uuid[-8:]
+
+        def debug_handler(characteristic, data: bytearray) -> None:
+            self.log(f"[DEBUG:{short}] {data.hex()}")
+            self.notification_handler(characteristic, data)
+
+        return debug_handler
 
     async def stop_notifications(self) -> None:
         if self.client is None:
