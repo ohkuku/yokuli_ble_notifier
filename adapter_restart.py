@@ -13,6 +13,19 @@ from config_loader import BluetoothConfig
 _log = logging.getLogger("adapter")
 
 
+async def _btctl(*args: str, timeout: float = 6.0) -> None:
+    """Run a bluetoothctl sub-command, ignoring errors."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bluetoothctl", *args,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except Exception as exc:
+        _log.warning(f"bluetoothctl {' '.join(args)} failed: {exc}")
+
+
 class AdapterRestartCoordinator:
     """
     Coordinates a global Bluetooth adapter restart across all BLE devices.
@@ -25,23 +38,29 @@ class AdapterRestartCoordinator:
     Restart sequence
     ----------------
     1. Signal every device's _disconnected_event so its run-loop exits
-       run_connected_loop immediately and the finally-block calls
-       BleakClient.disconnect().  This is the cleanest way to flush Python-
-       level BLE state before tearing down the adapter.
-    2. Wait 2 s for in-progress disconnections to complete.
-    3. bluetoothctl disconnect <MAC> for every known device as a belt-and-
-       suspenders system-level cleanup.
-    4. Wait 1 s for BlueZ to process the disconnects.
-    5. Run adapter_restart_command (e.g. sudo systemctl restart bluetooth).
-    6. Wait adapter_settle_seconds (default 5 s) for the adapter to
+       run_connected_loop immediately and BleakClient.disconnect() is called.
+    2. Wait 2 s for Python-level disconnections to complete.
+    3. For each device MAC:
+         bluetoothctl disconnect <MAC>   — explicit system-level disconnect
+         bluetoothctl remove <MAC>       — purge BlueZ device cache; this is
+                                          the key step that clears stale
+                                          connection state and forces a fresh
+                                          scan+pair on the next connect attempt
+    4. bluetoothctl power off            — power-cycle the adapter
+    5. Wait 1 s
+    6. bluetoothctl power on
+    7. Wait adapter_settle_seconds (default 4 s) for the adapter to
        re-enumerate and be ready to accept new connections.
+
+    No sudo or systemctl required — only bluetoothctl, which works for any
+    user in the bluetooth group.
     """
 
     def __init__(
         self,
         bt_config: BluetoothConfig,
         all_devices: "List[BaseBleDevice]",
-        adapter_settle_seconds: float = 5.0,
+        adapter_settle_seconds: float = 4.0,
     ) -> None:
         self._config = bt_config
         self._all_devices = all_devices
@@ -100,57 +119,34 @@ class AdapterRestartCoordinator:
         logger.warning("=== Bluetooth adapter restart triggered ===")
 
         # ── Step 1: signal all devices to exit their connected loop ──────────
-        # Setting _disconnected_event causes run_connected_loop to raise
-        # ConnectionError, which lands in the except block and then the
-        # finally block where BleakClient.disconnect() is called.  This is
-        # the most orderly way to flush Python-level BLE state.
         _log.info("Signalling all devices to disconnect ...")
         for device in self._all_devices:
             if not device._stop_event.is_set():
                 device._disconnected_event.set()
 
-        # Give the run loops time to call BleakClient.disconnect().
+        # Give run-loops time to call BleakClient.disconnect().
         await asyncio.sleep(2.0)
 
-        # ── Step 2: system-level disconnect via bluetoothctl ─────────────────
-        # Belt-and-suspenders: ensures BlueZ releases connection state even
-        # if a BleakClient.disconnect() silently failed.
+        # ── Step 2: per-device BlueZ cleanup ─────────────────────────────────
         for device in self._all_devices:
             mac = device.config.mac
+            # Explicit disconnect first (belt-and-suspenders).
             _log.info(f"bluetoothctl disconnect {mac}")
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "bluetoothctl", "disconnect", mac,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except Exception as exc:
-                _log.warning(f"bluetoothctl disconnect {mac} failed: {exc}")
+            await _btctl("disconnect", mac)
+            # Remove purges the device from BlueZ's cache so the next
+            # connection goes through a clean scan+connect path rather than
+            # trying to reuse stale state.
+            _log.info(f"bluetoothctl remove {mac}")
+            await _btctl("remove", mac)
+
+        # ── Step 3: power-cycle the adapter ──────────────────────────────────
+        _log.info("bluetoothctl power off")
+        await _btctl("power", "off")
 
         await asyncio.sleep(1.0)
 
-        # ── Step 3: restart the adapter service ──────────────────────────────
-        cmd = self._config.adapter_restart_command
-        _log.info(f"Running adapter restart: {cmd}")
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30.0)
-            if proc.returncode != 0:
-                _log.warning(
-                    f"Restart command exited {proc.returncode}: "
-                    f"{stderr_bytes.decode(errors='replace').strip()}"
-                )
-            else:
-                _log.info("Adapter restart command succeeded.")
-        except asyncio.TimeoutError:
-            _log.error("Adapter restart command timed out after 30 s")
-        except Exception as exc:
-            _log.error(f"Adapter restart command failed: {exc}")
+        _log.info("bluetoothctl power on")
+        await _btctl("power", "on")
 
         # ── Step 4: wait for adapter to re-enumerate ─────────────────────────
         _log.info(f"Waiting {self._settle:.0f}s for adapter to stabilize ...")

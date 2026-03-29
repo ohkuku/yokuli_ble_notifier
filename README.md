@@ -94,10 +94,8 @@ app:
   status_port: 8080            # 状态网页端口
 
 bluetooth:
-  enable_adapter_restart: false          # 连续失败达到阈值后是否自动重启蓝牙适配器
-  adapter_restart_command: "sudo systemctl restart bluetooth"
-  restart_cooldown_seconds: 60           # 两次自动重启之间的最短间隔（秒）
-                                         # 手动点击网页按钮不受此限制，但会更新冷却计时
+  enable_adapter_restart: false   # 连续失败达到阈值后是否自动重启蓝牙适配器
+  restart_cooldown_seconds: 60    # 两次自动重启之间的最短间隔（秒）
 
 devices:
   coulometer:
@@ -132,14 +130,20 @@ devices:
       read_all: "01030100000f"
 ```
 
-### 蓝牙自动重启频率说明
+### 蓝牙重启流程说明
 
-`restart_cooldown_seconds` 控制**自动重启**的最短间隔：
+重启不依赖 `sudo systemctl restart bluetooth`，完全通过 `bluetoothctl` 完成：
 
-- 设备连续失败次数达到 `max_fail_before_restart` 时触发一次重启
-- 重启后 `restart_cooldown_seconds` 秒内不再触发（防止重启风暴）
-- 网页上的"重启蓝牙适配器"按钮是手动操作，**不受 `enable_adapter_restart` 开关约束**，但会同步更新冷却计时
-- 网页蓝牙面板实时显示：上次重启时间 + 距下次自动重启可用还剩多久
+1. 通知所有设备断开（Python 层 BleakClient.disconnect()）
+2. `bluetoothctl disconnect <MAC>` —— 系统级断开
+3. `bluetoothctl remove <MAC>` —— **清除 BlueZ 设备缓存**（解决重连失败的根本原因）
+4. `bluetoothctl power off / power on` —— 电源循环适配器
+5. 等待 4 秒适配器重新枚举
+
+只需用户在 `bluetooth` 组即可，无需 sudo。
+
+`restart_cooldown_seconds` 控制**自动重启**的最短间隔，防止连续触发。
+网页"重启蓝牙适配器"按钮不受 `enable_adapter_restart` 开关约束，但会同步冷却计时。
 
 ## 手动运行
 

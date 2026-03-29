@@ -17,7 +17,6 @@ class AppConfig:
 class BluetoothConfig:
     restart_cooldown_seconds: int
     enable_adapter_restart: bool
-    adapter_restart_command: str
 
 
 @dataclass
@@ -95,7 +94,6 @@ def load_config(path: str = "config.yaml") -> Config:
     bluetooth = BluetoothConfig(
         restart_cooldown_seconds=int(_require(bt_raw, "restart_cooldown_seconds")),
         enable_adapter_restart=bool(_require(bt_raw, "enable_adapter_restart")),
-        adapter_restart_command=str(_require(bt_raw, "adapter_restart_command")),
     )
 
     devices: Dict[str, DeviceConfig] = {}

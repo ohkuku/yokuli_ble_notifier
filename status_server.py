@@ -184,7 +184,6 @@ function renderBluetooth(bt) {
     ['冷却时间', bt.cooldown_seconds + 's'],
     ['上次重启', bt.last_restart_ago == null ? '从未' : fmtAge(bt.last_restart_ago)],
     ['下次可用', fmtSec(bt.cooldown_remaining)],
-    ['重启命令', '<span style="color:#94a3b8;font-size:0.68rem">' + bt.restart_command + '</span>'],
   ];
   document.getElementById('bt-rows').innerHTML = rows.map(([l, v]) =>
     `<div class="bt-row"><span class="lbl">${l}</span><span class="val">${v}</span></div>`
@@ -345,7 +344,6 @@ class StatusServer:
             "bluetooth": {
                 "auto_restart_enabled": self.bt_config.enable_adapter_restart,
                 "cooldown_seconds": self.bt_config.restart_cooldown_seconds,
-                "restart_command": self.bt_config.adapter_restart_command,
                 "last_restart_ago": round(last_ago, 1) if last_ago is not None else None,
                 "cooldown_remaining": round(cooldown_remaining, 1),
             },
