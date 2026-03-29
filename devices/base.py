@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import time
 import logging
-from collections import deque
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Deque, List, Optional, Tuple
+from typing import List, Optional
 
 from bleak import BleakClient
 
@@ -47,7 +46,6 @@ class BaseBleDevice(ABC):
         self._pending_signalk: Optional[List[dict]] = None
         self.ble_connect_lock: Optional[asyncio.Lock] = None
         self.adapter_restart: Optional["AdapterRestartCoordinator"] = None
-        self.raw_packets: Deque[Tuple[float, str]] = deque(maxlen=180)
 
         self._logger = logging.getLogger(device_config.key)
 
@@ -144,21 +142,17 @@ class BaseBleDevice(ABC):
             await self.client.start_notify(uuid, handler)
 
     def _make_notify_handler(self, uuid: str):
-        """Return a notification callback that always captures raw packets."""
+        """Return a notification callback, optionally wrapped with debug logging."""
+        if not getattr(self.app_config.app, "enable_debug_log", False):
+            return self.notification_handler
+
         short = uuid[-8:]
-        debug_enabled = getattr(self.app_config.app, "enable_debug_log", False)
 
-        def wrapped_handler(characteristic, data: bytearray) -> None:
-            hex_data = data.hex()
-            now = time.time()
-            ts = time.strftime("%H:%M:%S", time.localtime(now))
-            self.raw_packets.append((now, f"{ts} [{self.config.key}] [RAW:{short}] {hex_data}"))
-
-            if debug_enabled:
-                self._logger.debug(f"[DEBUG:{short}] {hex_data}")
+        def debug_handler(characteristic, data: bytearray) -> None:
+            self._logger.debug(f"[DEBUG:{short}] {data.hex()}")
             self.notification_handler(characteristic, data)
 
-        return wrapped_handler
+        return debug_handler
 
     async def stop_notifications(self) -> None:
         if self.client is None:
