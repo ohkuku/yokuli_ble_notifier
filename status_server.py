@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, List, Optional
+from collections import deque
+from typing import TYPE_CHECKING, Deque, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from adapter_restart import AdapterRestartCoordinator
@@ -13,6 +14,26 @@ if TYPE_CHECKING:
 from config_loader import BluetoothConfig
 
 logger = logging.getLogger("status")
+
+
+class _RingLogHandler(logging.Handler):
+    """In-memory ring buffer handler for dashboard log panes."""
+
+    def __init__(self, normal_buffer: Deque[str], raw_buffer: Deque[str]) -> None:
+        super().__init__(level=logging.INFO)
+        self.normal_buffer = normal_buffer
+        self.raw_buffer = raw_buffer
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            ts = time.strftime("%H:%M:%S", time.localtime(record.created))
+            msg = record.getMessage()
+            line = f"{ts} [{record.name}] {msg}"
+            self.normal_buffer.append(line)
+            if "[DEBUG:" in msg:
+                self.raw_buffer.append(line)
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # Embedded dashboard HTML
@@ -41,20 +62,62 @@ section-title {
 /* ── Device grid ── */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px; margin-bottom: 18px;
+}
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr; }
 }
 .card {
   background: #1e293b; border: 1px solid #334155;
   border-radius: 12px; padding: 18px; transition: opacity 0.3s;
 }
 .card.offline { opacity: 0.45; }
+.card-main {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+}
+.card-media {
+  width: 140px;
+  min-width: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .card-header {
   display: flex; align-items: flex-start;
   justify-content: space-between; gap: 10px; margin-bottom: 14px;
 }
+.card-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
 .card-title { font-size: 0.95rem; font-weight: 600; }
 .card-sub { font-size: 0.68rem; color: #64748b; margin-top: 3px; line-height: 1.5; }
+.thumb {
+  width: 132px;
+  height: 132px;
+  object-fit: cover;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: #0b1220;
+}
+@media (max-width: 600px) {
+  .card-main { flex-direction: column; }
+  .card-media {
+    width: 100%;
+    min-width: 0;
+  }
+  .thumb {
+    width: 100%;
+    max-width: 220px;
+    height: 120px;
+    object-fit: contain;
+  }
+}
 .badge {
   display: flex; align-items: center; gap: 5px;
   padding: 4px 9px; border-radius: 999px;
@@ -84,6 +147,10 @@ section-title {
 .btn-red    { background: #991b1b; color: #fff; }
 .btn-gray   { background: #334155; color: #94a3b8; }
 .card-btns  { display: flex; gap: 8px; flex-wrap: wrap; }
+.card .card-btns {
+  margin-top: auto;
+  justify-content: flex-end;
+}
 /* ── Bluetooth panel ── */
 .bt-panel {
   background: #1e293b; border: 1px solid #334155;
@@ -105,6 +172,36 @@ section-title {
   color: #475569; margin-bottom: 12px;
 }
 .ctrl-btns { display: flex; gap: 10px; flex-wrap: wrap; }
+/* ── Log panels ── */
+.logs-panel {
+  background: #1e293b; border: 1px solid #334155;
+  border-radius: 12px; padding: 16px; margin-bottom: 14px;
+}
+.logs-title {
+  font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #475569;
+}
+.logs-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 10px; flex-wrap: wrap;
+}
+.switch {
+  font-size: 0.72rem; color: #cbd5e1;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.logbox {
+  background: #0b1220;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  height: 180px;
+  overflow: auto;
+  padding: 8px;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+}
+.logbox.raw { border-color: #1d4ed8; }
 /* ── Toast message ── */
 #toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
@@ -135,12 +232,28 @@ section-title {
 <div class="controls">
   <div class="controls-title">进程控制</div>
   <div class="ctrl-btns">
+    <button class="btn btn-blue"   onclick="doUpdateFromGit()">拉取 GitHub 更新并重启</button>
     <button class="btn btn-orange" onclick="doRestartService()">重启进程</button>
     <button class="btn btn-red"    onclick="doRebootPi()">重启树莓派</button>
   </div>
 </div>
 
 <div class="grid" id="grid"></div>
+
+<div class="logs-panel">
+  <div class="logs-toolbar">
+    <div class="logs-title">运行日志</div>
+    <label class="switch">
+      <input type="checkbox" id="toggle-raw" onchange="toggleRawPane()">
+      显示原始报文（DEBUG）
+    </label>
+  </div>
+  <div id="normal-log" class="logbox">暂无日志</div>
+  <div id="raw-wrap" style="display:none; margin-top:10px;">
+    <div class="logs-title" style="margin-bottom:8px;">原始报文</div>
+    <div id="raw-log" class="logbox raw">暂无原始报文</div>
+  </div>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -152,8 +265,15 @@ const STATE_LABELS = {
   running:'运行中', connected:'已连接', connecting:'连接中',
   backoff:'等待重连', disconnected:'未连接', stopped:'已停止',
 };
+// 设备缩略图（可替换为 base64 data URI；当前先使用外链）
+const DEVICE_THUMBS = {
+  coulometer: 'https://s.alicdn.com/@sc04/kf/H69a904cba993490b974325272698f6eax.jpg?avif=close&webp=close',
+  mppt: 'https://www.burnsco.co.nz/media/catalog/product/4/0/40971_1649161044.jpeg?optimize=high&fit=bounds&height=840&width=840&canvas=840:840',
+};
 
 let _actionLock = false;
+let _lastNormalLogs = '';
+let _lastRawLogs = '';
 
 function toast(msg, ms=3000) {
   const el = document.getElementById('toast');
@@ -176,6 +296,24 @@ function fmtSec(s) {
   return (s / 60).toFixed(1) + 'min 后可用';
 }
 
+function toggleRawPane() {
+  const checked = document.getElementById('toggle-raw').checked;
+  document.getElementById('raw-wrap').style.display = checked ? 'block' : 'none';
+}
+
+function setLogLines(elId, lines, key) {
+  const el = document.getElementById(elId);
+  const text = lines && lines.length ? lines.join('\n') : (key === 'raw' ? '暂无原始报文' : '暂无日志');
+  const old = key === 'raw' ? _lastRawLogs : _lastNormalLogs;
+  if (old === text) return;
+
+  const nearBottom = (el.scrollTop + el.clientHeight + 8) >= el.scrollHeight;
+  el.textContent = text;
+  if (key === 'raw') _lastRawLogs = text;
+  else _lastNormalLogs = text;
+  if (nearBottom) el.scrollTop = el.scrollHeight;
+}
+
 function renderBluetooth(bt) {
   const rows = [
     ['自动重启', bt.auto_restart_enabled
@@ -196,28 +334,34 @@ function renderCard(d) {
   const offline = d.state === 'stopped' || d.state === 'disconnected';
   const stale   = d.last_data_age > 30;
   const hasErr  = d.fail_count > 0;
+  const thumb   = DEVICE_THUMBS[d.key] || '';
   return `<div class="card${offline ? ' offline' : ''}">
-    <div class="card-header">
-      <div>
-        <div class="card-title">${d.name}</div>
-        <div class="card-sub">${d.key}<br>${d.mac}</div>
+    <div class="card-main">
+      ${thumb ? `<div class="card-media"><img class="thumb" src="${thumb}" alt="${d.name} thumbnail" /></div>` : ''}
+      <div class="card-info">
+        <div class="card-header">
+          <div>
+            <div class="card-title">${d.name}</div>
+            <div class="card-sub">${d.key}<br>${d.mac}</div>
+          </div>
+          <div class="badge" style="color:${color}">
+            <div class="dot"></div>${label}
+          </div>
+        </div>
+        <div class="rows">
+          <div class="row"><span class="lbl">最后数据</span>
+            <span class="val${stale?' warn':''}"> ${fmtAge(d.last_data_age)}</span></div>
+          <div class="row"><span class="lbl">连接失败</span>
+            <span class="val${hasErr?' err':''}"> ${d.fail_count} 次</span></div>
+          <div class="row"><span class="lbl">Signal K 客户端</span>
+            <span class="val">${d.signalk_clients}</span></div>
+          <div class="row"><span class="lbl">TCP 端口</span>
+            <span class="val">${d.tcp_port}</span></div>
+        </div>
+        <div class="card-btns">
+          <button class="btn btn-blue" onclick="doDisconnectDevice('${d.key}')">断连重连</button>
+        </div>
       </div>
-      <div class="badge" style="color:${color}">
-        <div class="dot"></div>${label}
-      </div>
-    </div>
-    <div class="rows">
-      <div class="row"><span class="lbl">最后数据</span>
-        <span class="val${stale?' warn':''}"> ${fmtAge(d.last_data_age)}</span></div>
-      <div class="row"><span class="lbl">连接失败</span>
-        <span class="val${hasErr?' err':''}"> ${d.fail_count} 次</span></div>
-      <div class="row"><span class="lbl">Signal K 客户端</span>
-        <span class="val">${d.signalk_clients}</span></div>
-      <div class="row"><span class="lbl">TCP 端口</span>
-        <span class="val">${d.tcp_port}</span></div>
-    </div>
-    <div class="card-btns">
-      <button class="btn btn-blue" onclick="doDisconnectDevice('${d.key}')">断连重连</button>
     </div>
   </div>`;
 }
@@ -258,6 +402,13 @@ function doRestartService() {
     '确认重启 yokuli 进程？\n\n进程将立即重启，网页会短暂无响应后自动恢复。',
   );
 }
+function doUpdateFromGit() {
+  postAction(
+    {action:'update_from_git'},
+    '确认拉取 GitHub main 分支更新并重启？\n\n将执行：git fetch && git pull(main) && ./auto_launch restart',
+    '二次确认：如果有本地未提交改动，可能导致更新失败。确定继续吗？'
+  );
+}
 function doRebootPi() {
   postAction(
     {action:'reboot_pi'},
@@ -273,6 +424,8 @@ async function poll() {
     const data = await r.json();
     document.getElementById('grid').innerHTML = data.devices.map(renderCard).join('');
     if (data.bluetooth) renderBluetooth(data.bluetooth);
+    setLogLines('normal-log', data.logs || [], 'normal');
+    setLogLines('raw-log', data.raw_logs || [], 'raw');
     document.getElementById('ts').textContent =
       '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12:false});
   } catch(e) {
@@ -312,12 +465,16 @@ class StatusServer:
         self.bt_config = bt_config
         self.coordinator = coordinator
         self._server: Optional[asyncio.AbstractServer] = None
+        self._dashboard_logs: Deque[str] = deque(maxlen=180)
+        self._dashboard_raw_logs: Deque[str] = deque(maxlen=180)
+        self._ring_handler: Optional[_RingLogHandler] = None
 
     # ── Snapshot ────────────────────────────────────────────────────────────
 
     def _snapshot(self) -> dict:
         now = time.time()
         coord = self.coordinator
+        merged_raw: List[Tuple[float, str]] = []
         if coord is not None and coord._last_restart_time > 0:
             last_ago: Optional[float] = now - coord._last_restart_time
             cooldown_remaining = max(
@@ -326,6 +483,15 @@ class StatusServer:
         else:
             last_ago = None
             cooldown_remaining = 0.0
+
+        for device in self.devices:
+            merged_raw.extend(getattr(device, "raw_packets", []))
+        merged_raw.sort(key=lambda x: x[0])
+        raw_logs = [line for _, line in merged_raw[-180:]]
+        if self._dashboard_raw_logs:
+            # Keep non-BLE DEBUG lines if present, while avoiding unbounded growth.
+            raw_logs.extend(list(self._dashboard_raw_logs)[-40:])
+            raw_logs = raw_logs[-180:]
 
         return {
             "devices": [
@@ -347,11 +513,14 @@ class StatusServer:
                 "last_restart_ago": round(last_ago, 1) if last_ago is not None else None,
                 "cooldown_remaining": round(cooldown_remaining, 1),
             },
+            "logs": list(self._dashboard_logs),
+            "raw_logs": raw_logs,
         }
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
+        self._install_ring_logger()
         self._server = await asyncio.start_server(
             self._handle, "0.0.0.0", self.port
         )
@@ -361,6 +530,20 @@ class StatusServer:
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
+        self._remove_ring_logger()
+
+    def _install_ring_logger(self) -> None:
+        if self._ring_handler is not None:
+            return
+        handler = _RingLogHandler(self._dashboard_logs, self._dashboard_raw_logs)
+        logging.getLogger().addHandler(handler)
+        self._ring_handler = handler
+
+    def _remove_ring_logger(self) -> None:
+        if self._ring_handler is None:
+            return
+        logging.getLogger().removeHandler(self._ring_handler)
+        self._ring_handler = None
 
     # ── HTTP handler ─────────────────────────────────────────────────────────
 
@@ -464,6 +647,11 @@ class StatusServer:
             logger.info("[action] restart_service triggered")
             return {"ok": True, "message": "进程重启中，1 秒后执行"}
 
+        if action == "update_from_git":
+            asyncio.create_task(self._do_update_from_git())
+            logger.info("[action] update_from_git triggered")
+            return {"ok": True, "message": "开始拉取 GitHub main 更新，完成后自动重启"}
+
         if action == "reboot_pi":
             asyncio.create_task(self._do_reboot_pi())
             logger.info("[action] reboot_pi triggered")
@@ -524,3 +712,27 @@ class StatusServer:
             await asyncio.wait_for(proc.wait(), timeout=10.0)
         except Exception as exc:
             logger.error(f"Reboot failed: {exc}")
+
+    async def _do_update_from_git(self) -> None:
+        """
+        Pull latest code from GitHub main branch and restart via auto_launch.
+        """
+        await asyncio.sleep(1.0)
+        logger.info("Updating from GitHub main and restarting ...")
+        cmd = "git fetch origin main && git pull --ff-only origin main && ./auto_launch restart"
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+            if proc.returncode != 0:
+                logger.error(
+                    f"Update from git failed ({proc.returncode}): "
+                    f"{(err or out).decode(errors='replace').strip()}"
+                )
+            else:
+                logger.info("Update from git completed successfully.")
+        except Exception as exc:
+            logger.error(f"Update from git failed: {exc}")
