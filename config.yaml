@@ -34,7 +34,7 @@ devices:
       - "0000fff1-0000-1000-8000-00805f9b34fb"
     write_uuid: "0000ffd1-0000-1000-8000-00805f9b34fb"
     watchdog_timeout_seconds: 30
-    reconnect_delay_seconds: 3
+    reconnect_delay_seconds: 5
     max_fail_before_restart: 5           # 失败次数阈值（不触发全局重启，仅计数）
     adapter_restart_on_fail: false       # 该设备的失败不触发全局重启
     poll_interval_seconds: 8
