@@ -190,19 +190,21 @@ class BaseBleDevice(ABC):
                 break
 
             # Exponential backoff: base * 2^(fail-1), capped at _MAX_BACKOFF_SECONDS.
-            backoff = min(
-                self.config.reconnect_delay_seconds * (1.3 ** (self.fail_count - 1)),
-                _MAX_BACKOFF_SECONDS,
-                )
+            # backoff = min(
+            #     self.config.reconnect_delay_seconds * (1.3 ** (self.fail_count - 1)),
+            #     _MAX_BACKOFF_SECONDS,
+            #     )
 
             self.state = DeviceState.BACKOFF
-            # self._logger.info(f"Backing off for {self.config.reconnect_delay_seconds}s ...")
-            # await asyncio.sleep(self.config.reconnect_delay_seconds)
+            self._logger.info(f"Backing off for {self.config.reconnect_delay_seconds}s ...")
+            await asyncio.sleep(self.config.reconnect_delay_seconds)
+            #
+            # self._logger.info(
+            #     f"Backing off {backoff:.0f}s (fail #{self.fail_count}) ..."
+            # )
+            # await asyncio.sleep(backoff)
 
-            self._logger.info(
-                f"Backing off {backoff:.0f}s (fail #{self.fail_count}) ..."
-            )
-            await asyncio.sleep(backoff)
+
 
         self.state = DeviceState.STOPPED
         self._logger.info("Stopped.")
