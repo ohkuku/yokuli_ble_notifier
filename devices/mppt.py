@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import List, Optional
 
 from devices.base import BaseBleDevice
 
@@ -68,6 +68,7 @@ class MpptDevice(BaseBleDevice):
                     parsed = self.parse_payload(payload)
                     self.mark_data_received()
                     self.log(f"Parsed: {parsed}")
+                    self._queue_signalk(self._to_signalk(parsed))
 
                 self.data_buffer.clear()
 
@@ -115,6 +116,48 @@ class MpptDevice(BaseBleDevice):
             "pv_w": regs[9],
             "temp_c": regs[13] / 100.0,
         }
+
+    def _to_signalk(self, parsed: dict) -> List[dict]:
+        """Convert MPPT parsed data to Signal K path/value pairs."""
+        values: List[dict] = []
+        if "bat_v" in parsed:
+            values.append({
+                "path": "electrical.batteries.house.voltage",
+                "value": parsed["bat_v"],
+            })
+        if "bat_a" in parsed:
+            values.append({
+                "path": "electrical.batteries.house.current",
+                "value": parsed["bat_a"],
+            })
+        if "soc" in parsed:
+            # Device returns 0-100 integer; Signal K expects 0.0-1.0
+            values.append({
+                "path": "electrical.batteries.house.capacity.stateOfCharge",
+                "value": parsed["soc"] / 100.0,
+            })
+        if "temp_c" in parsed:
+            # Signal K expects temperature in Kelvin
+            values.append({
+                "path": "electrical.batteries.house.temperature",
+                "value": round(parsed["temp_c"] + 273.15, 2),
+            })
+        if "pv_v" in parsed:
+            values.append({
+                "path": "electrical.solar.house.voltage",
+                "value": parsed["pv_v"],
+            })
+        if "pv_a" in parsed:
+            values.append({
+                "path": "electrical.solar.house.current",
+                "value": parsed["pv_a"],
+            })
+        if "pv_w" in parsed:
+            values.append({
+                "path": "electrical.solar.house.panelPower",
+                "value": parsed["pv_w"],
+            })
+        return values
 
     async def _sleep_safe(self, seconds: float) -> None:
         # 只是包一层，后面要扩展 stop 逻辑更方便
