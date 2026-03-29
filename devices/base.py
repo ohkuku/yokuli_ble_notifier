@@ -12,6 +12,11 @@ from bleak import BleakClient
 from config_loader import DeviceConfig, Config
 from signalk_sender import SignalKTcpServer
 
+# Forward-declared to avoid a circular import at runtime.
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from adapter_restart import AdapterRestartCoordinator
+
 _MAX_BACKOFF_SECONDS = 30
 
 
@@ -40,6 +45,7 @@ class BaseBleDevice(ABC):
         self.signalk: Optional[SignalKTcpServer] = None
         self._pending_signalk: Optional[List[dict]] = None
         self.ble_connect_lock: Optional[asyncio.Lock] = None
+        self.adapter_restart: Optional["AdapterRestartCoordinator"] = None
 
         self._logger = logging.getLogger(device_config.key)
 
@@ -172,6 +178,19 @@ class BaseBleDevice(ABC):
             except Exception as e:
                 self.fail_count += 1
                 self._logger.error(f"Error (fail #{self.fail_count}): {e}")
+
+                # If adapter restart is configured and we've hit the threshold,
+                # ask the coordinator to restart the Bluetooth adapter.  The
+                # coordinator serialises restarts and enforces a cooldown, so
+                # it's safe to call from every device independently.
+                if (
+                    self.adapter_restart is not None
+                    and self.fail_count >= self.config.max_fail_before_restart
+                ):
+                    restarted = await self.adapter_restart.maybe_restart(self)
+                    if restarted:
+                        # Reset so the backoff starts fresh after the restart.
+                        self.fail_count = 0
 
             finally:
                 try:

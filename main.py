@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from adapter_restart import AdapterRestartCoordinator
 from config_loader import load_config
 from devices.coulometer import CoulometerDevice
 from devices.mppt import MpptDevice
@@ -23,8 +24,10 @@ async def main():
     ble_connect_lock = asyncio.Lock()
     tasks: list[asyncio.Task] = []
     signalk_servers: list[SignalKTcpServer] = []
+    devices: list = []
 
     try:
+        # ── Phase 1: build device objects and start Signal K TCP servers ────
         for key, device_cfg in config.devices.items():
             if not device_cfg.enabled:
                 continue
@@ -48,11 +51,26 @@ async def main():
             device.ble_connect_lock = ble_connect_lock
 
             signalk_servers.append(signalk)
-            tasks.append(asyncio.create_task(device.run(), name=key))
+            devices.append(device)
 
-        if not tasks:
+        if not devices:
             logging.info("No enabled devices found.")
             return
+
+        # ── Phase 2: wire up shared services before any task starts ─────────
+        if config.bluetooth.enable_adapter_restart:
+            coordinator = AdapterRestartCoordinator(config.bluetooth, devices)
+            for device in devices:
+                device.adapter_restart = coordinator
+            logging.info(
+                f"Adapter auto-restart enabled "
+                f"(cooldown {config.bluetooth.restart_cooldown_seconds}s, "
+                f"command: {config.bluetooth.adapter_restart_command!r})"
+            )
+
+        # ── Phase 3: start BLE tasks ─────────────────────────────────────────
+        for device in devices:
+            tasks.append(asyncio.create_task(device.run(), name=device.config.key))
 
         await asyncio.gather(*tasks)
 
