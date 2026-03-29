@@ -185,6 +185,7 @@ class BaseBleDevice(ABC):
                 # it's safe to call from every device independently.
                 if (
                     self.adapter_restart is not None
+                    and self.config.adapter_restart_on_fail
                     and self.fail_count >= self.config.max_fail_before_restart
                 ):
                     restarted = await self.adapter_restart.maybe_restart(self)

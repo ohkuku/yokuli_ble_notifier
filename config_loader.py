@@ -36,6 +36,7 @@ class DeviceConfig:
     battery_capacity_ah: Optional[float] = None
     poll_interval_seconds: Optional[int] = None
     commands: Optional[Dict[str, str]] = None
+    adapter_restart_on_fail: bool = False
 
 
 @dataclass
@@ -131,6 +132,7 @@ def load_config(path: str = "config.yaml") -> Config:
                 else int(device_raw.get("poll_interval_seconds"))
             ),
             commands=_ensure_optional_dict(device_raw.get("commands"), f"devices.{key}.commands"),
+            adapter_restart_on_fail=bool(device_raw.get("adapter_restart_on_fail", False)),
         )
 
         devices[device.key] = device

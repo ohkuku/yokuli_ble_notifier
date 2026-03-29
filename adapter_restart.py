@@ -15,21 +15,26 @@ _log = logging.getLogger("adapter")
 
 class AdapterRestartCoordinator:
     """
-    Coordinates Bluetooth adapter restarts across multiple BLE devices.
+    Coordinates a global Bluetooth adapter restart across all BLE devices.
 
-    When any device accumulates too many consecutive failures, it calls
-    maybe_restart().  Only one restart runs at a time (asyncio.Lock) and
-    a cooldown prevents restart storms.
+    Any device with adapter_restart_on_fail=true will call maybe_restart()
+    when its consecutive failure count reaches max_fail_before_restart.
+    Only one restart runs at a time (asyncio.Lock), and restart_cooldown_seconds
+    prevents restart storms.
 
     Restart sequence
     ----------------
-    1. System-level disconnect for every known MAC via ``bluetoothctl``.
-       This tells BlueZ to release its connection state before we pull the
-       rug out from under it, which avoids the "Operation already in
-       progress" ghost-connection problem on the next reconnect attempt.
-    2. Run adapter_restart_command (e.g. ``sudo systemctl restart bluetooth``).
-    3. Wait adapter_settle_seconds for the adapter to re-enumerate and be
-       ready to accept new connections (default 5 s).
+    1. Signal every device's _disconnected_event so its run-loop exits
+       run_connected_loop immediately and the finally-block calls
+       BleakClient.disconnect().  This is the cleanest way to flush Python-
+       level BLE state before tearing down the adapter.
+    2. Wait 2 s for in-progress disconnections to complete.
+    3. bluetoothctl disconnect <MAC> for every known device as a belt-and-
+       suspenders system-level cleanup.
+    4. Wait 1 s for BlueZ to process the disconnects.
+    5. Run adapter_restart_command (e.g. sudo systemctl restart bluetooth).
+    6. Wait adapter_settle_seconds (default 5 s) for the adapter to
+       re-enumerate and be ready to accept new connections.
     """
 
     def __init__(
@@ -46,13 +51,16 @@ class AdapterRestartCoordinator:
 
     async def maybe_restart(self, requesting_device: "BaseBleDevice") -> bool:
         """
-        Trigger an adapter restart if enabled and the cooldown has elapsed.
+        Trigger a restart if enabled and the cooldown has elapsed.
 
-        Returns True when a restart was actually performed (the caller should
-        reset its fail_count).  Returns False when the restart is disabled,
-        the cooldown is still active, or another device just performed one.
+        Returns True when a restart was performed (caller should reset
+        fail_count).  Returns False when disabled, still in cooldown, or
+        another device just ran one.
         """
         if not self._config.enable_adapter_restart:
+            requesting_device._logger.info(
+                "Adapter restart skipped — enable_adapter_restart is false"
+            )
             return False
 
         now = time.time()
@@ -64,7 +72,7 @@ class AdapterRestartCoordinator:
             return False
 
         async with self._lock:
-            # Re-check inside the lock: another device may have just restarted.
+            # Re-check: another device may have just restarted while we waited.
             now = time.time()
             remaining = self._config.restart_cooldown_seconds - (now - self._last_restart_time)
             if remaining > 0:
@@ -77,14 +85,36 @@ class AdapterRestartCoordinator:
             await self._do_restart(requesting_device)
             return True
 
+    async def force_restart(self, requesting_device: "BaseBleDevice") -> None:
+        """
+        Unconditional restart (used by the web dashboard's manual button).
+        Bypasses the enable_adapter_restart flag and cooldown check, but
+        updates _last_restart_time so the auto-restart cooldown is accurate.
+        """
+        async with self._lock:
+            self._last_restart_time = time.time()
+            await self._do_restart(requesting_device)
+
     async def _do_restart(self, requesting_device: "BaseBleDevice") -> None:
         logger = requesting_device._logger
         logger.warning("=== Bluetooth adapter restart triggered ===")
 
-        # ── Step 1: System-level disconnect for each known MAC ──────────────
-        # This asks BlueZ to cleanly release the connection before the service
-        # is restarted.  Failures are non-fatal; the service restart will force
-        # disconnection anyway.
+        # ── Step 1: signal all devices to exit their connected loop ──────────
+        # Setting _disconnected_event causes run_connected_loop to raise
+        # ConnectionError, which lands in the except block and then the
+        # finally block where BleakClient.disconnect() is called.  This is
+        # the most orderly way to flush Python-level BLE state.
+        _log.info("Signalling all devices to disconnect ...")
+        for device in self._all_devices:
+            if not device._stop_event.is_set():
+                device._disconnected_event.set()
+
+        # Give the run loops time to call BleakClient.disconnect().
+        await asyncio.sleep(2.0)
+
+        # ── Step 2: system-level disconnect via bluetoothctl ─────────────────
+        # Belt-and-suspenders: ensures BlueZ releases connection state even
+        # if a BleakClient.disconnect() silently failed.
         for device in self._all_devices:
             mac = device.config.mac
             _log.info(f"bluetoothctl disconnect {mac}")
@@ -98,11 +128,9 @@ class AdapterRestartCoordinator:
             except Exception as exc:
                 _log.warning(f"bluetoothctl disconnect {mac} failed: {exc}")
 
-        # Small pause to let BlueZ process the disconnects before the service
-        # is torn down.
         await asyncio.sleep(1.0)
 
-        # ── Step 2: Run the adapter restart command ──────────────────────────
+        # ── Step 3: restart the adapter service ──────────────────────────────
         cmd = self._config.adapter_restart_command
         _log.info(f"Running adapter restart: {cmd}")
         try:
@@ -124,8 +152,8 @@ class AdapterRestartCoordinator:
         except Exception as exc:
             _log.error(f"Adapter restart command failed: {exc}")
 
-        # ── Step 3: Wait for adapter to re-enumerate ─────────────────────────
+        # ── Step 4: wait for adapter to re-enumerate ─────────────────────────
         _log.info(f"Waiting {self._settle:.0f}s for adapter to stabilize ...")
         await asyncio.sleep(self._settle)
 
-        logger.warning("=== Adapter restart complete ===")
+        logger.warning("=== Adapter restart complete — devices will reconnect ===")

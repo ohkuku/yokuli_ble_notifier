@@ -477,58 +477,27 @@ class StatusServer:
 
     async def _do_restart_bluetooth(self) -> None:
         """
-        Full adapter restart sequence:
-          1. bluetoothctl disconnect <MAC> for every device
-          2. 1 s pause
-          3. adapter_restart_command
-          4. 5 s settle wait
-        Also updates coordinator._last_restart_time so the auto-restart
-        cooldown stays accurate.
+        Manual adapter restart triggered from the web dashboard.
+        Delegates to coordinator.force_restart() so the full cleanup
+        sequence (signal all devices → bluetoothctl disconnect → restart
+        command → settle wait) runs exactly once, and _last_restart_time
+        is updated so the auto-restart cooldown stays accurate.
+        If no coordinator exists (enable_adapter_restart=false in config),
+        a temporary one is created just for this call.
         """
-        logger.warning("=== Manual bluetooth adapter restart ===")
+        from adapter_restart import AdapterRestartCoordinator
 
-        # Step 1 – system-level disconnect for every known MAC
-        for device in self.devices:
-            mac = device.config.mac
-            logger.info(f"bluetoothctl disconnect {mac}")
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "bluetoothctl", "disconnect", mac,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except Exception as exc:
-                logger.warning(f"bluetoothctl disconnect {mac} failed: {exc}")
+        coord = self.coordinator
+        if coord is None:
+            coord = AdapterRestartCoordinator(self.bt_config, self.devices)
 
-        await asyncio.sleep(1.0)
+        # Use the first device as the "requester" for logging context.
+        requester = self.devices[0] if self.devices else None
+        if requester is None:
+            logger.warning("No devices registered; skipping bluetooth restart")
+            return
 
-        # Step 2 – restart the adapter service
-        cmd = self.bt_config.adapter_restart_command
-        logger.info(f"Running: {cmd}")
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30.0)
-            if proc.returncode != 0:
-                logger.warning(
-                    f"Restart command exited {proc.returncode}: "
-                    f"{stderr_bytes.decode(errors='replace').strip()}"
-                )
-        except Exception as exc:
-            logger.error(f"Adapter restart command failed: {exc}")
-
-        # Step 3 – settle
-        await asyncio.sleep(5.0)
-
-        # Update coordinator so auto-restart cooldown reflects this manual restart
-        if self.coordinator is not None:
-            self.coordinator._last_restart_time = time.time()
-
-        logger.warning("=== Manual bluetooth adapter restart complete ===")
+        await coord.force_restart(requester)
 
     async def _do_restart_service(self) -> None:
         """Restart the systemd service after a short delay (so HTTP response is sent first)."""
