@@ -10,6 +10,7 @@ class AppConfig:
     vessel_id: str
     log_level: str
     enable_debug_log: bool = False
+    status_port: int = 8080
 
 
 @dataclass
@@ -87,6 +88,7 @@ def load_config(path: str = "config.yaml") -> Config:
         vessel_id=str(_require(app_raw, "vessel_id")),
         log_level=str(_require(app_raw, "log_level")),
         enable_debug_log=bool(app_raw.get("enable_debug_log", False)),
+        status_port=int(app_raw.get("status_port", 8080)),
     )
 
     bluetooth = BluetoothConfig(

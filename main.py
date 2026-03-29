@@ -6,6 +6,7 @@ from config_loader import load_config
 from devices.coulometer import CoulometerDevice
 from devices.mppt import MpptDevice
 from signalk_sender import SignalKTcpServer
+from status_server import StatusServer
 
 
 async def main():
@@ -25,6 +26,8 @@ async def main():
     tasks: list[asyncio.Task] = []
     signalk_servers: list[SignalKTcpServer] = []
     devices: list = []
+    status_server: StatusServer | None = None
+    coordinator: AdapterRestartCoordinator | None = None
 
     try:
         # ── Phase 1: build device objects and start Signal K TCP servers ────
@@ -68,6 +71,14 @@ async def main():
                 f"command: {config.bluetooth.adapter_restart_command!r})"
             )
 
+        status_server = StatusServer(
+            port=config.app.status_port,
+            devices=devices,
+            bt_config=config.bluetooth,
+            coordinator=coordinator,
+        )
+        await status_server.start()
+
         # ── Phase 3: start BLE tasks ─────────────────────────────────────────
         for device in devices:
             tasks.append(asyncio.create_task(device.run(), name=device.config.key))
@@ -88,6 +99,12 @@ async def main():
                 await server.stop()
             except Exception as e:
                 logging.warning(f"Failed to stop Signal K server: {e}")
+
+        if status_server is not None:
+            try:
+                await status_server.stop()
+            except Exception as e:
+                logging.warning(f"Failed to stop status server: {e}")
 
         logging.info("Shutdown complete.")
 
