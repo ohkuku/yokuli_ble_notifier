@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from collections import deque
-from typing import TYPE_CHECKING, Deque, List, Optional
+from typing import TYPE_CHECKING, Deque, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from adapter_restart import AdapterRestartCoordinator
@@ -409,6 +409,7 @@ class StatusServer:
     def _snapshot(self) -> dict:
         now = time.time()
         coord = self.coordinator
+        merged_raw: List[Tuple[float, str]] = []
         if coord is not None and coord._last_restart_time > 0:
             last_ago: Optional[float] = now - coord._last_restart_time
             cooldown_remaining = max(
@@ -417,6 +418,15 @@ class StatusServer:
         else:
             last_ago = None
             cooldown_remaining = 0.0
+
+        for device in self.devices:
+            merged_raw.extend(getattr(device, "raw_packets", []))
+        merged_raw.sort(key=lambda x: x[0])
+        raw_logs = [line for _, line in merged_raw[-180:]]
+        if self._dashboard_raw_logs:
+            # Keep non-BLE DEBUG lines if present, while avoiding unbounded growth.
+            raw_logs.extend(list(self._dashboard_raw_logs)[-40:])
+            raw_logs = raw_logs[-180:]
 
         return {
             "devices": [
@@ -439,7 +449,7 @@ class StatusServer:
                 "cooldown_remaining": round(cooldown_remaining, 1),
             },
             "logs": list(self._dashboard_logs),
-            "raw_logs": list(self._dashboard_raw_logs),
+            "raw_logs": raw_logs,
         }
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
