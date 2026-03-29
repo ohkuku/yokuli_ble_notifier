@@ -92,6 +92,8 @@ section-title {
 .card-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 .card-title { font-size: 0.95rem; font-weight: 600; }
 .card-sub { font-size: 0.68rem; color: #64748b; margin-top: 3px; line-height: 1.5; }
@@ -145,6 +147,10 @@ section-title {
 .btn-red    { background: #991b1b; color: #fff; }
 .btn-gray   { background: #334155; color: #94a3b8; }
 .card-btns  { display: flex; gap: 8px; flex-wrap: wrap; }
+.card .card-btns {
+  margin-top: auto;
+  justify-content: flex-end;
+}
 /* ── Bluetooth panel ── */
 .bt-panel {
   background: #1e293b; border: 1px solid #334155;
