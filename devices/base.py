@@ -74,9 +74,17 @@ class BaseBleDevice(ABC):
 
     def _on_ble_disconnect(self, client: BleakClient) -> None:
         """Bleak disconnection callback — signals the run loop to reconnect immediately."""
-        if not self._stop_event.is_set():
-            self._logger.info("Device disconnected (BLE callback)")
-            self._disconnected_event.set()
+        # Guard 1: ignore callbacks from old BleakClient instances (stale state
+        # after disconnect).  During backoff self.client is None; during a new
+        # connect attempt self.client is already the new instance.  Either way
+        # the old client's callback should be a no-op.
+        if client is not self.client:
+            return
+        # Guard 2: deduplicate — only act on the first callback per disconnect.
+        if self._stop_event.is_set() or self._disconnected_event.is_set():
+            return
+        self._logger.info("Device disconnected (BLE callback)")
+        self._disconnected_event.set()
 
     async def connect(self) -> None:
         # Clean up any stale client before attempting a new connection.
@@ -161,6 +169,11 @@ class BaseBleDevice(ABC):
             self._disconnected_event.clear()
             try:
                 await self.connect()
+                # Clear any _disconnected_event that was set by a stale callback
+                # during the connect phase (e.g. BlueZ reporting a ghost disconnect
+                # before we even finished connecting).  Without this, run_connected_loop
+                # would raise ConnectionError after the very first 1-second tick.
+                self._disconnected_event.clear()
                 await self.start_notifications()
                 await self.on_after_connect()
 
