@@ -10,13 +10,13 @@ class AppConfig:
     vessel_id: str
     log_level: str
     enable_debug_log: bool = False
+    status_port: int = 8080
 
 
 @dataclass
 class BluetoothConfig:
     restart_cooldown_seconds: int
     enable_adapter_restart: bool
-    adapter_restart_command: str
 
 
 @dataclass
@@ -35,6 +35,7 @@ class DeviceConfig:
     battery_capacity_ah: Optional[float] = None
     poll_interval_seconds: Optional[int] = None
     commands: Optional[Dict[str, str]] = None
+    adapter_restart_on_fail: bool = False
 
 
 @dataclass
@@ -87,12 +88,12 @@ def load_config(path: str = "config.yaml") -> Config:
         vessel_id=str(_require(app_raw, "vessel_id")),
         log_level=str(_require(app_raw, "log_level")),
         enable_debug_log=bool(app_raw.get("enable_debug_log", False)),
+        status_port=int(app_raw.get("status_port", 8080)),
     )
 
     bluetooth = BluetoothConfig(
         restart_cooldown_seconds=int(_require(bt_raw, "restart_cooldown_seconds")),
         enable_adapter_restart=bool(_require(bt_raw, "enable_adapter_restart")),
-        adapter_restart_command=str(_require(bt_raw, "adapter_restart_command")),
     )
 
     devices: Dict[str, DeviceConfig] = {}
@@ -129,6 +130,7 @@ def load_config(path: str = "config.yaml") -> Config:
                 else int(device_raw.get("poll_interval_seconds"))
             ),
             commands=_ensure_optional_dict(device_raw.get("commands"), f"devices.{key}.commands"),
+            adapter_restart_on_fail=bool(device_raw.get("adapter_restart_on_fail", False)),
         )
 
         devices[device.key] = device

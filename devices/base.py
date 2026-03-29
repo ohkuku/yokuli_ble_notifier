@@ -12,6 +12,11 @@ from bleak import BleakClient
 from config_loader import DeviceConfig, Config
 from signalk_sender import SignalKTcpServer
 
+# Forward-declared to avoid a circular import at runtime.
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from adapter_restart import AdapterRestartCoordinator
+
 _MAX_BACKOFF_SECONDS = 30
 
 
@@ -40,6 +45,7 @@ class BaseBleDevice(ABC):
         self.signalk: Optional[SignalKTcpServer] = None
         self._pending_signalk: Optional[List[dict]] = None
         self.ble_connect_lock: Optional[asyncio.Lock] = None
+        self.adapter_restart: Optional["AdapterRestartCoordinator"] = None
 
         self._logger = logging.getLogger(device_config.key)
 
@@ -68,9 +74,17 @@ class BaseBleDevice(ABC):
 
     def _on_ble_disconnect(self, client: BleakClient) -> None:
         """Bleak disconnection callback — signals the run loop to reconnect immediately."""
-        if not self._stop_event.is_set():
-            self._logger.info("Device disconnected (BLE callback)")
-            self._disconnected_event.set()
+        # Guard 1: ignore callbacks from old BleakClient instances (stale state
+        # after disconnect).  During backoff self.client is None; during a new
+        # connect attempt self.client is already the new instance.  Either way
+        # the old client's callback should be a no-op.
+        if client is not self.client:
+            return
+        # Guard 2: deduplicate — only act on the first callback per disconnect.
+        if self._stop_event.is_set() or self._disconnected_event.is_set():
+            return
+        self._logger.info("Device disconnected (BLE callback)")
+        self._disconnected_event.set()
 
     async def connect(self) -> None:
         # Clean up any stale client before attempting a new connection.
@@ -155,6 +169,11 @@ class BaseBleDevice(ABC):
             self._disconnected_event.clear()
             try:
                 await self.connect()
+                # Clear any _disconnected_event that was set by a stale callback
+                # during the connect phase (e.g. BlueZ reporting a ghost disconnect
+                # before we even finished connecting).  Without this, run_connected_loop
+                # would raise ConnectionError after the very first 1-second tick.
+                self._disconnected_event.clear()
                 await self.start_notifications()
                 await self.on_after_connect()
 
@@ -172,6 +191,20 @@ class BaseBleDevice(ABC):
             except Exception as e:
                 self.fail_count += 1
                 self._logger.error(f"Error (fail #{self.fail_count}): {e}")
+
+                # If adapter restart is configured and we've hit the threshold,
+                # ask the coordinator to restart the Bluetooth adapter.  The
+                # coordinator serialises restarts and enforces a cooldown, so
+                # it's safe to call from every device independently.
+                if (
+                    self.adapter_restart is not None
+                    and self.config.adapter_restart_on_fail
+                    and self.fail_count >= self.config.max_fail_before_restart
+                ):
+                    restarted = await self.adapter_restart.maybe_restart(self)
+                    if restarted:
+                        # Reset so the backoff starts fresh after the restart.
+                        self.fail_count = 0
 
             finally:
                 try:

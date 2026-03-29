@@ -2,11 +2,11 @@ app:
   vessel_id: "vessels.self"
   log_level: "INFO"
   enable_debug_log: false   # 设为 true 时将所有原始 BLE 包以 hex 打印到终端
+  status_port: 8080         # 状态网页端口，浏览器访问 http://<树莓派IP>:8080
 
 bluetooth:
-  restart_cooldown_seconds: 60
-  enable_adapter_restart: false
-  adapter_restart_command: "sudo systemctl restart bluetooth"
+  enable_adapter_restart: true    # 连续失败达阈值后自动重启蓝牙适配器
+  restart_cooldown_seconds: 60    # 两次自动重启之间的最短间隔（秒）
 
 devices:
   coulometer:
@@ -21,7 +21,8 @@ devices:
     battery_capacity_ah: 320.0
     watchdog_timeout_seconds: 20
     reconnect_delay_seconds: 7
-    max_fail_before_restart: 2
+    max_fail_before_restart: 3           # 连续失败 3 次后触发全局蓝牙重启
+    adapter_restart_on_fail: true        # 该设备的失败会触发全局蓝牙适配器重启
 
   mppt:
     enabled: true
@@ -34,7 +35,8 @@ devices:
     write_uuid: "0000ffd1-0000-1000-8000-00805f9b34fb"
     watchdog_timeout_seconds: 30
     reconnect_delay_seconds: 13
-    max_fail_before_restart: 2
+    max_fail_before_restart: 5           # 失败次数阈值（不触发全局重启，仅计数）
+    adapter_restart_on_fail: false       # 该设备的失败不触发全局重启
     poll_interval_seconds: 8
     commands:
       unlock: "0103000c0001"
