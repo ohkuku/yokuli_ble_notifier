@@ -14,17 +14,23 @@
 ```
 BLE 设备 ──蓝牙──▶ 树莓派 (本程序) ──TCP──▶ Signal K Server
   Junctek                port 9999 ─────────────────▶ electrical.batteries.house.*
-  Renogy MPPT            port 9998 ─────────────────▶ electrical.batteries.house.*
+  Renogy MPPT            port 9998 ─────────────────▶ electrical.batteries.house.current
+                                                       electrical.batteries.house.temperature
                                                        electrical.solar.house.*
 ```
 
 - 每个 BLE 设备独立运行一个 TCP 服务器，Signal K Server 主动连入
 - 收到 BLE 通知后，将解析结果打包成 Signal K delta JSON（换行分隔）发送给所有连接的客户端
-- 断线自动重连，支持 watchdog 超时检测
+- 连接前先通过 `BleakScanner` 扫描确认设备存在，避免 BlueZ 隐式 discovery 冲突
+- 多设备通过 `asyncio.Lock` 串行化连接阶段，连上后完全并行
+- 断线立即触发重连（BLE callback），指数退避避免频繁打蓝牙栈
+- 关闭时（Ctrl+C / systemd stop）等待所有设备断开、TCP 服务器关闭后再退出
 
 ## 发布的 Signal K 路径
 
 ### Junctek 库仑计（source: `pi-py-ble-junctek`）
+
+电池数据权威来源，负责所有电池状态路径。
 
 | Signal K 路径 | 单位 | 说明 |
 |---|---|---|
@@ -36,11 +42,11 @@ BLE 设备 ──蓝牙──▶ 树莓派 (本程序) ──TCP──▶ Signal
 
 ### Renogy MPPT（source: `pi-py-ble-renogy`）
 
+仅发布太阳能路径，以及 MPPT 侧对电池的充电电流和温度。电池电压和 SOC 由库仑计负责，不在此处重复发布。
+
 | Signal K 路径 | 单位 | 说明 |
 |---|---|---|
-| `electrical.batteries.house.voltage` | V | 电池电压 |
-| `electrical.batteries.house.current` | A | 充电电流 |
-| `electrical.batteries.house.capacity.stateOfCharge` | 0–1 | 荷电状态 |
+| `electrical.batteries.house.current` | A | 充电电流（太阳能侧） |
 | `electrical.batteries.house.temperature` | K | 电池温度（开尔文） |
 | `electrical.solar.house.voltage` | V | 光伏板电压 |
 | `electrical.solar.house.current` | A | 光伏板电流 |
@@ -63,9 +69,10 @@ sudo usermod -aG bluetooth $USER
 
 ```yaml
 app:
-  vessel_id: "vessels.self"   # Signal K context，通常保持默认
-  log_level: "INFO"
-  enable_debug_log: false      # 设为 true 时打印所有原始 BLE 包（hex），用于调试解析问题
+  vessel_id: "vessels.self"    # Signal K context，通常保持默认
+  log_level: "INFO"            # 日志级别：DEBUG / INFO / WARNING / ERROR
+  enable_debug_log: true       # true：打印所有原始 BLE 包（hex）+ DEBUG 日志，用于调试解析问题
+                               # false：仅打印正常运行日志
 
 bluetooth:
   enable_adapter_restart: false          # 多次失败后是否重启蓝牙适配器
@@ -84,7 +91,7 @@ devices:
     write_uuid: null
     battery_capacity_ah: 320.0           # 电池总容量（Ah），用于计算 SOC
     watchdog_timeout_seconds: 20         # 超过此时间无数据则断线重连
-    reconnect_delay_seconds: 7           # 重连等待时间
+    reconnect_delay_seconds: 7           # 重连基础等待时间（指数退避，上限 60s）
     max_fail_before_restart: 2           # 连续失败多少次后重启蓝牙适配器
 
   mppt:
@@ -97,7 +104,7 @@ devices:
       - "0000fff1-0000-1000-8000-00805f9b34fb"
     write_uuid: "0000ffd1-0000-1000-8000-00805f9b34fb"
     watchdog_timeout_seconds: 30
-    reconnect_delay_seconds: 13
+    reconnect_delay_seconds: 13          # 重连基础等待时间（指数退避，上限 60s）
     max_fail_before_restart: 2
     poll_interval_seconds: 8             # 每隔多少秒主动轮询一次（Modbus 设备需要）
     commands:
@@ -147,7 +154,7 @@ git pull
 
 在 Signal K 管理界面中添加两个 **TCP** 数据源：
 
-1. 进入 **Server → Plugin Config → Signal K to NMEA** 或 **Connections → Add**
+1. 进入 **Server → Connections → Add**
 2. 选择类型 **TCP**，填写：
    - Junctek 库仑计：主机 `localhost`，端口 `9999`
    - Renogy MPPT：主机 `localhost`，端口 `9998`
@@ -155,7 +162,7 @@ git pull
 
 ## 调试 BLE 包
 
-遇到数据解析异常时，在 `config.yaml` 中开启：
+遇到数据解析异常时，在 `config.yaml` 中设置：
 
 ```yaml
 app:
@@ -165,26 +172,29 @@ app:
 重启后终端（或 `./auto_launch log`）会打印每一个原始 BLE 通知包，格式如下：
 
 ```
-[coulometer] [DEBUG:f9b34fb] bb00041800c154d800ee
-[coulometer] Parsed: {'current_a': -4.18, 'voltage_v': 13.27, ...}
+10:14:36 [coulometer] [f9b34fb] bb00041800c154d800ee
+10:14:36 [coulometer] Parsed: {'current_a': -4.18, 'voltage_v': 13.27, ...}
 ```
 
-> 调试完毕后记得改回 `false`，否则日志会非常嘈杂。
+> 调试完毕后改回 `false`，否则日志会非常嘈杂。
 
 ## 常见问题
 
 **Q：启动时报 `Operation already in progress`**
-两个设备同时发起 BLE 连接会触发此错误。程序已通过 `asyncio.Lock` 串行化连接，通常等一会儿会自动重试成功。
+多设备同时扫描/连接会触发此错误。程序通过 `asyncio.Lock` 串行化连接阶段，搜不到设备时会立即释放锁让另一个设备继续，通常自动恢复。
+
+**Q：搜不到设备（Device not found）**
+检查设备是否开机、蓝牙是否启用，以及 MAC 地址是否正确。搜不到只影响该设备自己的重试，不会阻塞其他已连接的设备。
 
 **Q：连接后很快断开，无法重连**
 BlueZ 可能保留了旧的连接状态。尝试：
 ```bash
 sudo systemctl restart bluetooth
 ```
-程序的 `enable_adapter_restart` 配置也可以在多次失败后自动执行此操作。
+程序的 `enable_adapter_restart` 配置也可以在多次失败后自动执行此操作。重连等待时间会指数增加（7s → 14s → 28s → … 上限 60s）。
 
 **Q：Ctrl+C 后进程卡住不退出**
-`disconnect()` 有 5 秒超时保护，最多等待 5 秒后强制退出。如果仍然卡住，可以 `kill` 进程后重启蓝牙服务。
+`disconnect()` 有 5 秒超时保护，`main.py` 也会等所有设备清理完再退出。如果仍卡住，`kill` 进程后重启蓝牙服务即可。
 
 **Q：SOC 数值不准**
-Junctek 的 SOC 基于 `battery_capacity_ah` 配置计算，请确认该值与你的实际电池容量匹配。
+Junctek 的 SOC 基于 `battery_capacity_ah` 配置计算，请确认该值与实际电池容量匹配。

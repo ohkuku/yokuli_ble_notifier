@@ -1,7 +1,7 @@
 app:
   vessel_id: "vessels.self"
   log_level: "INFO"
-  enable_debug_log: false   # 设为 true 时将所有原始 BLE 包以 hex 打印到终端
+  enable_debug_log: true    # 设为 true 时将所有原始 BLE 包以 hex 打印到终端
 
 bluetooth:
   restart_cooldown_seconds: 60
