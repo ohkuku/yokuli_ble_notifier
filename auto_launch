@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# auto_launch — 管理 yokuli-ble-notifier systemd 服务
+#
+# 用法：
+#   ./auto_launch install    安装并启用开机自启
+#   ./auto_launch uninstall  停止并移除自启
+#   ./auto_launch update     更新服务文件并重启（git pull 后运行）
+#   ./auto_launch start      启动服务
+#   ./auto_launch stop       停止服务
+#   ./auto_launch restart    重启服务
+#   ./auto_launch status     查看运行状态
+#   ./auto_launch log        实时跟踪日志
+
+set -euo pipefail
+
+SERVICE_NAME="yokuli-ble-notifier"
+SYSTEMD_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="$(command -v python3 || echo /usr/bin/python3)"
+RUN_USER="$(whoami)"
+
+_generate_service() {
+    cat <<EOF
+[Unit]
+Description=Yokuli BLE Notifier — Signal K BLE data bridge
+After=network.target bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=${RUN_USER}
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${PYTHON} ${SCRIPT_DIR}/main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${SERVICE_NAME}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+_require_systemctl() {
+    if ! command -v systemctl &>/dev/null; then
+        echo "错误：找不到 systemctl，此脚本需要 systemd 环境。" >&2
+        exit 1
+    fi
+}
+
+cmd_install() {
+    _require_systemctl
+    echo "→ 生成服务文件 ${SYSTEMD_PATH}"
+    _generate_service | sudo tee "${SYSTEMD_PATH}" > /dev/null
+    echo "→ 重载 systemd"
+    sudo systemctl daemon-reload
+    echo "→ 启用开机自启"
+    sudo systemctl enable "${SERVICE_NAME}"
+    echo "→ 启动服务"
+    sudo systemctl start "${SERVICE_NAME}"
+    echo ""
+    echo "安装完成。可用命令："
+    echo "  ./auto_launch status   查看状态"
+    echo "  ./auto_launch log      查看日志"
+}
+
+cmd_uninstall() {
+    _require_systemctl
+    echo "→ 停止服务"
+    sudo systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+    echo "→ 禁用开机自启"
+    sudo systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
+    echo "→ 删除服务文件"
+    sudo rm -f "${SYSTEMD_PATH}"
+    sudo systemctl daemon-reload
+    echo "已卸载 ${SERVICE_NAME}。"
+}
+
+cmd_update() {
+    _require_systemctl
+    echo "→ 更新服务文件"
+    _generate_service | sudo tee "${SYSTEMD_PATH}" > /dev/null
+    sudo systemctl daemon-reload
+    echo "→ 重启服务"
+    sudo systemctl restart "${SERVICE_NAME}"
+    echo "更新完成。"
+    systemctl status "${SERVICE_NAME}" --no-pager || true
+}
+
+cmd_start()   { _require_systemctl; sudo systemctl start   "${SERVICE_NAME}"; echo "已启动。"; }
+cmd_stop()    { _require_systemctl; sudo systemctl stop    "${SERVICE_NAME}"; echo "已停止。"; }
+cmd_restart() { _require_systemctl; sudo systemctl restart "${SERVICE_NAME}"; echo "已重启。"; }
+cmd_status()  { _require_systemctl; systemctl status "${SERVICE_NAME}" --no-pager || true; }
+cmd_log()     { _require_systemctl; journalctl -u "${SERVICE_NAME}" -f; }
+
+usage() {
+    cat <<EOF
+用法: ./auto_launch <命令>
+
+命令:
+  install    生成服务文件、启用开机自启并立即启动
+  uninstall  停止服务并移除自启配置
+  update     更新服务文件并重启（git pull 后使用）
+  start      启动服务
+  stop       停止服务
+  restart    重启服务
+  status     查看运行状态
+  log        实时跟踪 systemd 日志 (Ctrl+C 退出)
+EOF
+}
+
+case "${1:-}" in
+    install)   cmd_install   ;;
+    uninstall) cmd_uninstall ;;
+    update)    cmd_update    ;;
+    start)     cmd_start     ;;
+    stop)      cmd_stop      ;;
+    restart)   cmd_restart   ;;
+    status)    cmd_status    ;;
+    log)       cmd_log       ;;
+    *)         usage; exit 1 ;;
+esac
