@@ -11,6 +11,7 @@ devices:
   coulometer:
     enabled: true
     name: "Junctek"
+    source_label: "pi-py-ble-junctek"
     mac: "3C:AB:72:25:E6:68"
     tcp_port: 9999
     notify_uuids:
@@ -24,6 +25,7 @@ devices:
   mppt:
     enabled: true
     name: "Renogy_MPPT"
+    source_label: "pi-py-ble-renogy"
     mac: "DC:0D:30:0F:2A:81"
     tcp_port: 9998
     notify_uuids:

@@ -4,11 +4,12 @@ import asyncio
 import time
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 from bleak import BleakClient
 
 from config_loader import DeviceConfig, Config
+from signalk_sender import SignalKTcpServer
 
 
 class DeviceState(str, Enum):
@@ -32,8 +33,22 @@ class BaseBleDevice(ABC):
         self.last_data_time = 0.0
         self._stop_event = asyncio.Event()
 
+        self.signalk: Optional[SignalKTcpServer] = None
+        self._pending_signalk: Optional[List[dict]] = None
+
     def log(self, message: str) -> None:
         print(f"[{self.config.key}] {message}")
+
+    def _queue_signalk(self, values: List[dict]) -> None:
+        """Called by subclasses after parsing data to stage Signal K updates."""
+        if values:
+            self._pending_signalk = values
+
+    async def _flush_signalk(self) -> None:
+        """Send any pending Signal K values and clear the buffer."""
+        if self.signalk is not None and self._pending_signalk:
+            await self.signalk.send(self._pending_signalk)
+            self._pending_signalk = None
 
     def mark_data_received(self) -> None:
         self.last_data_time = time.time()
@@ -147,6 +162,7 @@ class BaseBleDevice(ABC):
                 )
 
             await self.on_tick()
+            await self._flush_signalk()
 
     @abstractmethod
     def notification_handler(self, characteristic, data: bytearray) -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from devices.base import BaseBleDevice
 
@@ -43,6 +43,7 @@ class CoulometerDevice(BaseBleDevice):
             if parsed is not None:
                 self.mark_data_received()
                 self.log(f"Parsed: {parsed}")
+                self._queue_signalk(self._to_signalk(parsed))
 
     def parse_frame(self, frame: bytes) -> Optional[dict]:
         import time
@@ -113,3 +114,35 @@ class CoulometerDevice(BaseBleDevice):
         except Exception as e:
             self.log(f"parse_frame error: {e}")
             return None
+
+    def _to_signalk(self, parsed: dict) -> List[dict]:
+        """Convert coulometer parsed data to Signal K path/value pairs."""
+        values: List[dict] = []
+        if "voltage_v" in parsed:
+            values.append({
+                "path": "electrical.batteries.house.voltage",
+                "value": parsed["voltage_v"],
+            })
+        if "current_a" in parsed:
+            values.append({
+                "path": "electrical.batteries.house.current",
+                "value": parsed["current_a"],
+            })
+        if "power_w" in parsed:
+            values.append({
+                "path": "electrical.batteries.house.power",
+                "value": parsed["power_w"],
+            })
+        if "remaining_ah" in parsed:
+            # Signal K expects remaining capacity in Joules (J = Ah * V * 3600)
+            joules = round(parsed["remaining_ah"] * self.last_voltage * 3600, 2)
+            values.append({
+                "path": "electrical.batteries.house.capacity.remaining",
+                "value": joules,
+            })
+        if "soc" in parsed:
+            values.append({
+                "path": "electrical.batteries.house.capacity.stateOfCharge",
+                "value": parsed["soc"],
+            })
+        return values
