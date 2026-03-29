@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional
+
+logger = logging.getLogger("signalk")
 
 
 class SignalKTcpServer:
@@ -25,11 +28,15 @@ class SignalKTcpServer:
         self._writers: List[asyncio.StreamWriter] = []
         self._server: Optional[asyncio.AbstractServer] = None
 
+    @property
+    def client_count(self) -> int:
+        return len(self._writers)
+
     async def start(self) -> None:
         self._server = await asyncio.start_server(
             self._handle_client, "0.0.0.0", self.port
         )
-        print(f"[SignalK] Listening on port {self.port} (source: {self.source_label})")
+        logger.info(f"Listening on port {self.port} (source: {self.source_label})")
 
     async def stop(self) -> None:
         if self._server is not None:
@@ -40,11 +47,17 @@ class SignalKTcpServer:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         addr = writer.get_extra_info("peername")
-        print(f"[SignalK:{self.port}] Client connected: {addr}")
+        logger.info(f"[:{self.port}] Client connected: {addr}")
         self._writers.append(writer)
         try:
-            # We don't expect inbound data; just wait until the client closes.
-            await reader.read(65536)
+            # We don't expect inbound data, but we must loop until EOF so that
+            # a single incoming byte (e.g. a Signal K hello/handshake packet)
+            # doesn't cause the handler to return prematurely, which would
+            # remove the writer and silently stop all future sends to this client.
+            while True:
+                data = await reader.read(65536)
+                if not data:  # EOF — client closed the connection
+                    break
         except Exception:
             pass
         finally:
@@ -55,7 +68,7 @@ class SignalKTcpServer:
                 await writer.wait_closed()
             except Exception:
                 pass
-            print(f"[SignalK:{self.port}] Client disconnected: {addr}")
+            logger.info(f"[:{self.port}] Client disconnected: {addr}")
 
     async def send(self, values: List[dict]) -> None:
         """Broadcast a Signal K delta with the given path/value list."""
@@ -80,7 +93,8 @@ class SignalKTcpServer:
         for writer in list(self._writers):
             try:
                 writer.write(data)
-                await writer.drain()
+                # Timeout protects against slow/stalled clients blocking the BLE loop.
+                await asyncio.wait_for(writer.drain(), timeout=3.0)
             except Exception:
                 dead.append(writer)
 
