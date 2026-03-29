@@ -73,22 +73,48 @@ section-title {
   border-radius: 12px; padding: 18px; transition: opacity 0.3s;
 }
 .card.offline { opacity: 0.45; }
+.card-main {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+}
+.card-media {
+  width: 140px;
+  min-width: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .card-header {
   display: flex; align-items: flex-start;
   justify-content: space-between; gap: 10px; margin-bottom: 14px;
 }
+.card-info {
+  flex: 1;
+  min-width: 0;
+}
 .card-title { font-size: 0.95rem; font-weight: 600; }
 .card-sub { font-size: 0.68rem; color: #64748b; margin-top: 3px; line-height: 1.5; }
-.thumb-wrap { margin-bottom: 10px; }
 .thumb {
-  width: 100%;
-  max-width: 260px;
-  height: 100px;
-  object-fit: contain;
+  width: 132px;
+  height: 132px;
+  object-fit: cover;
   border: 1px solid #334155;
   border-radius: 10px;
   background: #0b1220;
-  padding: 6px;
+}
+@media (max-width: 600px) {
+  .card-main { flex-direction: column; }
+  .card-media {
+    width: 100%;
+    min-width: 0;
+  }
+  .thumb {
+    width: 100%;
+    max-width: 220px;
+    height: 120px;
+    object-fit: contain;
+  }
 }
 .badge {
   display: flex; align-items: center; gap: 5px;
@@ -304,28 +330,32 @@ function renderCard(d) {
   const hasErr  = d.fail_count > 0;
   const thumb   = DEVICE_THUMBS[d.key] || '';
   return `<div class="card${offline ? ' offline' : ''}">
-    ${thumb ? `<div class="thumb-wrap"><img class="thumb" src="${thumb}" alt="${d.name} thumbnail" /></div>` : ''}
-    <div class="card-header">
-      <div>
-        <div class="card-title">${d.name}</div>
-        <div class="card-sub">${d.key}<br>${d.mac}</div>
+    <div class="card-main">
+      ${thumb ? `<div class="card-media"><img class="thumb" src="${thumb}" alt="${d.name} thumbnail" /></div>` : ''}
+      <div class="card-info">
+        <div class="card-header">
+          <div>
+            <div class="card-title">${d.name}</div>
+            <div class="card-sub">${d.key}<br>${d.mac}</div>
+          </div>
+          <div class="badge" style="color:${color}">
+            <div class="dot"></div>${label}
+          </div>
+        </div>
+        <div class="rows">
+          <div class="row"><span class="lbl">最后数据</span>
+            <span class="val${stale?' warn':''}"> ${fmtAge(d.last_data_age)}</span></div>
+          <div class="row"><span class="lbl">连接失败</span>
+            <span class="val${hasErr?' err':''}"> ${d.fail_count} 次</span></div>
+          <div class="row"><span class="lbl">Signal K 客户端</span>
+            <span class="val">${d.signalk_clients}</span></div>
+          <div class="row"><span class="lbl">TCP 端口</span>
+            <span class="val">${d.tcp_port}</span></div>
+        </div>
+        <div class="card-btns">
+          <button class="btn btn-blue" onclick="doDisconnectDevice('${d.key}')">断连重连</button>
+        </div>
       </div>
-      <div class="badge" style="color:${color}">
-        <div class="dot"></div>${label}
-      </div>
-    </div>
-    <div class="rows">
-      <div class="row"><span class="lbl">最后数据</span>
-        <span class="val${stale?' warn':''}"> ${fmtAge(d.last_data_age)}</span></div>
-      <div class="row"><span class="lbl">连接失败</span>
-        <span class="val${hasErr?' err':''}"> ${d.fail_count} 次</span></div>
-      <div class="row"><span class="lbl">Signal K 客户端</span>
-        <span class="val">${d.signalk_clients}</span></div>
-      <div class="row"><span class="lbl">TCP 端口</span>
-        <span class="val">${d.tcp_port}</span></div>
-    </div>
-    <div class="card-btns">
-      <button class="btn btn-blue" onclick="doDisconnectDevice('${d.key}')">断连重连</button>
     </div>
   </div>`;
 }
