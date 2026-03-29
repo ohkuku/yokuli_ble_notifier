@@ -9,6 +9,7 @@ from signalk_sender import SignalKTcpServer
 async def main():
     config = load_config("config.yaml")
 
+    ble_connect_lock = asyncio.Lock()
     tasks = []
 
     for key, device_cfg in config.devices.items():
@@ -30,6 +31,7 @@ async def main():
         )
         await signalk.start()
         device.signalk = signalk
+        device.ble_connect_lock = ble_connect_lock
 
         tasks.append(asyncio.create_task(device.run(), name=key))
 
