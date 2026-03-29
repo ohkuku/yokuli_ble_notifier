@@ -186,6 +186,7 @@ section-title {
 <div class="controls">
   <div class="controls-title">进程控制</div>
   <div class="ctrl-btns">
+    <button class="btn btn-blue"   onclick="doUpdateFromGit()">拉取 GitHub 更新并重启</button>
     <button class="btn btn-orange" onclick="doRestartService()">重启进程</button>
     <button class="btn btn-red"    onclick="doRebootPi()">重启树莓派</button>
   </div>
@@ -342,6 +343,13 @@ function doRestartService() {
   postAction(
     {action:'restart_service'},
     '确认重启 yokuli 进程？\n\n进程将立即重启，网页会短暂无响应后自动恢复。',
+  );
+}
+function doUpdateFromGit() {
+  postAction(
+    {action:'update_from_git'},
+    '确认拉取 GitHub main 分支更新并重启？\n\n将执行：git fetch && git pull(main) && ./auto_launch restart',
+    '二次确认：如果有本地未提交改动，可能导致更新失败。确定继续吗？'
   );
 }
 function doRebootPi() {
@@ -582,6 +590,11 @@ class StatusServer:
             logger.info("[action] restart_service triggered")
             return {"ok": True, "message": "进程重启中，1 秒后执行"}
 
+        if action == "update_from_git":
+            asyncio.create_task(self._do_update_from_git())
+            logger.info("[action] update_from_git triggered")
+            return {"ok": True, "message": "开始拉取 GitHub main 更新，完成后自动重启"}
+
         if action == "reboot_pi":
             asyncio.create_task(self._do_reboot_pi())
             logger.info("[action] reboot_pi triggered")
@@ -642,3 +655,27 @@ class StatusServer:
             await asyncio.wait_for(proc.wait(), timeout=10.0)
         except Exception as exc:
             logger.error(f"Reboot failed: {exc}")
+
+    async def _do_update_from_git(self) -> None:
+        """
+        Pull latest code from GitHub main branch and restart via auto_launch.
+        """
+        await asyncio.sleep(1.0)
+        logger.info("Updating from GitHub main and restarting ...")
+        cmd = "git fetch origin main && git pull --ff-only origin main && ./auto_launch restart"
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+            if proc.returncode != 0:
+                logger.error(
+                    f"Update from git failed ({proc.returncode}): "
+                    f"{(err or out).decode(errors='replace').strip()}"
+                )
+            else:
+                logger.info("Update from git completed successfully.")
+        except Exception as exc:
+            logger.error(f"Update from git failed: {exc}")
