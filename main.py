@@ -9,6 +9,7 @@ from signalk_sender import SignalKTcpServer
 async def main():
     config = load_config("config.yaml")
 
+    ble_connect_lock = asyncio.Lock()
     tasks = []
 
     for key, device_cfg in config.devices.items():
@@ -30,13 +31,9 @@ async def main():
         )
         await signalk.start()
         device.signalk = signalk
+        device.ble_connect_lock = ble_connect_lock
 
         tasks.append(asyncio.create_task(device.run(), name=key))
-
-        # Stagger BLE connection attempts to avoid BlueZ "Operation already
-        # in progress" errors when multiple devices connect simultaneously.
-        if len(tasks) < sum(1 for d in config.devices.values() if d.enabled):
-            await asyncio.sleep(5)
 
     if not tasks:
         print("No enabled devices found.")

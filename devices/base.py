@@ -35,6 +35,7 @@ class BaseBleDevice(ABC):
 
         self.signalk: Optional[SignalKTcpServer] = None
         self._pending_signalk: Optional[List[dict]] = None
+        self.ble_connect_lock: Optional[asyncio.Lock] = None
 
     def log(self, message: str) -> None:
         print(f"[{self.config.key}] {message}")
@@ -62,8 +63,13 @@ class BaseBleDevice(ABC):
         self.state = DeviceState.CONNECTING
         self.log(f"Connecting to {self.config.mac} ...")
 
-        self.client = BleakClient(self.config.mac, timeout=20.0)
-        await self.client.connect()
+        if self.ble_connect_lock is not None:
+            async with self.ble_connect_lock:
+                self.client = BleakClient(self.config.mac, timeout=20.0)
+                await self.client.connect()
+        else:
+            self.client = BleakClient(self.config.mac, timeout=20.0)
+            await self.client.connect()
 
         self.state = DeviceState.CONNECTED
         self.log("Connected.")
