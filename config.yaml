@@ -5,7 +5,7 @@ app:
   status_port: 8080         # 状态网页端口，浏览器访问 http://<树莓派IP>:8080
 
 bluetooth:
-  enable_adapter_restart: false   # 连续失败达阈值后自动重启蓝牙适配器
+  enable_adapter_restart: true    # 连续失败达阈值后自动重启蓝牙适配器
   restart_cooldown_seconds: 60    # 两次自动重启之间的最短间隔（秒）
 
 devices:

@@ -67,8 +67,7 @@ async def main():
                 device.adapter_restart = coordinator
             logging.info(
                 f"Adapter auto-restart enabled "
-                f"(cooldown {config.bluetooth.restart_cooldown_seconds}s, "
-                f"command: {config.bluetooth.adapter_restart_command!r})"
+                f"(cooldown {config.bluetooth.restart_cooldown_seconds}s)"
             )
 
         status_server = StatusServer(
