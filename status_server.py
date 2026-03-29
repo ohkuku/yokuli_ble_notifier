@@ -62,8 +62,11 @@ section-title {
 /* ── Device grid ── */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px; margin-bottom: 18px;
+}
+@media (max-width: 900px) {
+  .grid { grid-template-columns: 1fr; }
 }
 .card {
   background: #1e293b; border: 1px solid #334155;
@@ -76,6 +79,17 @@ section-title {
 }
 .card-title { font-size: 0.95rem; font-weight: 600; }
 .card-sub { font-size: 0.68rem; color: #64748b; margin-top: 3px; line-height: 1.5; }
+.thumb-wrap { margin-bottom: 10px; }
+.thumb {
+  width: 100%;
+  max-width: 260px;
+  height: 100px;
+  object-fit: contain;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: #0b1220;
+  padding: 6px;
+}
 .badge {
   display: flex; align-items: center; gap: 5px;
   padding: 4px 9px; border-radius: 999px;
@@ -219,6 +233,11 @@ const STATE_LABELS = {
   running:'运行中', connected:'已连接', connecting:'连接中',
   backoff:'等待重连', disconnected:'未连接', stopped:'已停止',
 };
+// 可按需替换为真实设备图片的 base64（key: coulometer / mppt）
+const DEVICE_THUMBS = {
+  coulometer: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0ODAiIGhlaWdodD0iMTgwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMGIxMjIwIi8+PHJlY3QgeD0iMTIiIHk9IjEyIiB3aWR0aD0iNDU2IiBoZWlnaHQ9IjE1NiIgcng9IjE0IiBmaWxsPSIjMTkyNDM0IiBzdHJva2U9IiMzMzQxNTUiLz48dGV4dCB4PSIyNCIgeT0iNDYiIGZvbnQtc2l6ZT0iMjYiIGZpbGw9IiM5NGEzYjgiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiPkp1bmN0ZWsgS0cxNjBGPC90ZXh0PjxyZWN0IHg9IjI0IiB5PSI2MCIgd2lkdGg9IjIwMCIgaGVpZ2h0PSI4OCIgcng9IjEwIiBmaWxsPSIjMGYxNzJhIiBzdHJva2U9IiMxZDhlZDgiLz48dGV4dCB4PSIzOCIgeT0iMTEwIiBmb250LXNpemU9IjI0IiBmaWxsPSIjMjJjNTVlIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIj4wMC4wQTwvdGV4dD48dGV4dCB4PSIzOCIgeT0iMTM2IiBmb250LXNpemU9IjE4IiBmaWxsPSIjY2JkNWUxIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIj4xMy4yOFY8L3RleHQ+PHRleHQgeD0iMjQ4IiB5PSIxMDAiIGZvbnQtc2l6ZT0iMTYiIGZpbGw9IiM2NDc0OGIiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiPkNvdWxvbWV0ZXI8L3RleHQ+PHRleHQgeD0iMjQ4IiB5PSIxMjYiIGZvbnQtc2l6ZT0iMTYiIGZpbGw9IiM2NDc0OGIiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiPlJhdzogRkZGMSBub3RpZnk8L3RleHQ+PC9zdmc+',
+  mppt: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0ODAiIGhlaWdodD0iMTgwIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMGIxMjIwIi8+PHJlY3QgeD0iMTIiIHk9IjEyIiB3aWR0aD0iNDU2IiBoZWlnaHQ9IjE1NiIgcng9IjE0IiBmaWxsPSIjMTkyNDM0IiBzdHJva2U9IiMzMzQxNTUiLz48dGV4dCB4PSIyNCIgeT0iNDYiIGZvbnQtc2l6ZT0iMjYiIGZpbGw9IiM5NGEzYjgiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiPlJlbm9neSBNUFBUPC90ZXh0PjxyZWN0IHg9IjI0IiB5PSI2MCIgd2lkdGg9IjIwMCIgaGVpZ2h0PSI4OCIgcng9IjEwIiBmaWxsPSIjMGYxNzJhIiBzdHJva2U9IiMxZDhlZDgiLz48dGV4dCB4PSIzOCIgeT0iMTA2IiBmb250LXNpemU9IjE4IiBmaWxsPSIjY2JkNWUxIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIj5iYXQ6IDEzLjNWPC90ZXh0Pjx0ZXh0IHg9IjM4IiB5PSIxMzAiIGZvbnQtc2l6ZT0iMTgiIGZpbGw9IiMyMmM1NWUiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiPnB2OiAxMC4zVjwvdGV4dD48dGV4dCB4PSIyNDgiIHk9IjEwMCIgZm9udC1zaXplPSIxNiIgZmlsbD0iIzY0NzQ4YiIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSI+TVBQVCBDb250cm9sbGVyPC90ZXh0Pjx0ZXh0IHg9IjI0OCIgeT0iMTI2IiBmb250LXNpemU9IjE2IiBmaWxsPSIjNjQ3NDhiIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIj5SZW5vZ3kgQkxFPC90ZXh0Pjwvc3ZnPg==',
+};
 
 let _actionLock = false;
 let _lastNormalLogs = '';
@@ -283,7 +302,9 @@ function renderCard(d) {
   const offline = d.state === 'stopped' || d.state === 'disconnected';
   const stale   = d.last_data_age > 30;
   const hasErr  = d.fail_count > 0;
+  const thumb   = DEVICE_THUMBS[d.key] || '';
   return `<div class="card${offline ? ' offline' : ''}">
+    ${thumb ? `<div class="thumb-wrap"><img class="thumb" src="${thumb}" alt="${d.name} thumbnail" /></div>` : ''}
     <div class="card-header">
       <div>
         <div class="card-title">${d.name}</div>
