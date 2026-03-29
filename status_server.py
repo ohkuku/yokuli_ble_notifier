@@ -215,7 +215,7 @@ section-title {
 </head>
 <body>
 <header>
-  <h1>yokuli BLE Monitor</h1>
+  <h1>yokuli BLE 蓝牙数据监控器</h1>
   <div class="ts" id="ts">正在连接...</div>
 </header>
 
