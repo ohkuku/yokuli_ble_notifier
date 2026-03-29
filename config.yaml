@@ -1,0 +1,38 @@
+app:
+  vessel_id: "vessels.self"
+  log_level: "INFO"
+
+bluetooth:
+  restart_cooldown_seconds: 60
+  enable_adapter_restart: false
+  adapter_restart_command: "sudo systemctl restart bluetooth"
+
+devices:
+  coulometer:
+    enabled: true
+    name: "Junctek"
+    mac: "3C:AB:72:25:E6:68"
+    tcp_port: 9999
+    notify_uuids:
+      - "0000fff1-0000-1000-8000-00805f9b34fb"
+    write_uuid: null
+    battery_capacity_ah: 320.0
+    watchdog_timeout_seconds: 20
+    reconnect_delay_seconds: 7
+    max_fail_before_restart: 2
+
+  mppt:
+    enabled: true
+    name: "Renogy_MPPT"
+    mac: "DC:0D:30:0F:2A:81"
+    tcp_port: 9998
+    notify_uuids:
+      - "0000fff1-0000-1000-8000-00805f9b34fb"
+    write_uuid: "0000ffd1-0000-1000-8000-00805f9b34fb"
+    watchdog_timeout_seconds: 30
+    reconnect_delay_seconds: 13
+    max_fail_before_restart: 2
+    poll_interval_seconds: 8
+    commands:
+      unlock: "0103000c0001"
+      read_all: "01030100000f"
