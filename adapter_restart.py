@@ -139,12 +139,33 @@ class AdapterRestartCoordinator:
             _log.info(f"bluetoothctl remove {mac}")
             await _btctl("remove", mac)
 
-        # ── Step 3: power-cycle the adapter ──────────────────────────────────
-        _log.info("bluetoothctl power off")
-        await _btctl("power", "off")
+        # ── Step 3: restart the bluetoothd daemon ────────────────────────────
+        # systemctl restart is stronger than `bluetoothctl power off/on`:
+        # it kills and respawns the entire bluetoothd process, wiping all
+        # in-memory state (pending operations, connection cache, etc.).
+        # The bluetoothctl remove steps above already deleted the on-disk
+        # pairing files in /var/lib/bluetooth/, so BlueZ restarts with a
+        # completely clean slate for our devices.
+        _log.info("sudo systemctl restart bluetooth")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "sudo", "systemctl", "restart", "bluetooth",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=20.0)
+            if proc.returncode != 0:
+                _log.warning(
+                    f"systemctl restart bluetooth exited {proc.returncode}: "
+                    f"{stderr_bytes.decode(errors='replace').strip()}"
+                )
+        except Exception as exc:
+            _log.error(f"systemctl restart bluetooth failed: {exc}")
 
-        await asyncio.sleep(1.0)
+        # Give bluetoothd time to fully initialize before we touch the adapter.
+        await asyncio.sleep(2.0)
 
+        # bluetoothd sometimes starts with the adapter powered off; ensure it's on.
         _log.info("bluetoothctl power on")
         await _btctl("power", "on")
 

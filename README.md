@@ -134,13 +134,13 @@ devices:
 
 ### 蓝牙重启流程
 
-重启完全通过 `bluetoothctl` 完成，无需 `sudo systemctl restart bluetooth`，用户在 `bluetooth` 组即可：
-
 1. 通知所有设备断开（Python 层 `BleakClient.disconnect()`）
 2. `bluetoothctl disconnect <MAC>` —— 系统级断开每个设备
-3. `bluetoothctl remove <MAC>` —— **清除 BlueZ 设备缓存**（解决重连失败的根本原因）
-4. `bluetoothctl power off / power on` —— 电源循环适配器
-5. 等待 4 秒适配器重新枚举，设备自动重连
+3. `bluetoothctl remove <MAC>` —— **清除 BlueZ 设备缓存**（删除 `/var/lib/bluetooth/` 里的配对文件）
+4. `sudo systemctl restart bluetooth` —— **重启整个 bluetoothd 进程**，清空所有内存状态
+5. 等 2 秒让 bluetoothd 完全启动
+6. `bluetoothctl power on` —— 确保适配器上电（bluetoothd 重启后可能默认关闭）
+7. 等待 4 秒适配器重新枚举，设备自动重连
 
 `restart_cooldown_seconds` 控制自动重启的最短间隔，防止连续触发。网页"重启蓝牙适配器"按钮不受 `enable_adapter_restart` 约束，随时可用，但会同步冷却计时。
 
@@ -189,9 +189,9 @@ git pull
 
 > `install` 会自动检测当前目录和 Python 路径，生成对应的 systemd 服务文件并写入 `/etc/systemd/system/`。
 
-### 赋予重启权限（网页进程/系统重启按钮需要）
+### 赋予重启权限（蓝牙重启、进程重启、系统重启均需要）
 
-网页上的"重启进程"和"重启树莓派"按钮需要 sudo 权限。蓝牙重启**不需要 sudo**。添加免密规则：
+以下操作需要 sudo 权限，一次性配置免密规则：
 
 ```bash
 sudo visudo -f /etc/sudoers.d/yokuli-ble
@@ -200,9 +200,12 @@ sudo visudo -f /etc/sudoers.d/yokuli-ble
 写入以下内容（将 `pi` 替换为实际用户名）：
 
 ```
+pi ALL=(ALL) NOPASSWD: /bin/systemctl restart bluetooth
 pi ALL=(ALL) NOPASSWD: /bin/systemctl restart yokuli-ble-notifier
 pi ALL=(ALL) NOPASSWD: /sbin/reboot
 ```
+
+> 蓝牙重启使用 `sudo systemctl restart bluetooth`，这比 `bluetoothctl power off/on` 更彻底——后者只切适配器电源，BlueZ 进程内存状态不清；前者杀掉并重启整个 bluetoothd 进程，配合 `bluetoothctl remove` 删除磁盘上的设备缓存文件，实现完全干净的重启。
 
 ## Signal K Server 配置
 
