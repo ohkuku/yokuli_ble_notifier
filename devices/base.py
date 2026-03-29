@@ -60,6 +60,17 @@ class BaseBleDevice(ABC):
         return time.time() - self.last_data_time
 
     async def connect(self) -> None:
+        # Clean up any stale client before attempting a new connection.
+        # Without this, a crashed BleakClient object stays alive and BlueZ
+        # may still consider the device connected, causing the next attempt
+        # to fail immediately.
+        if self.client is not None:
+            try:
+                await asyncio.wait_for(self.client.disconnect(), timeout=3.0)
+            except Exception:
+                pass
+            self.client = None
+
         self.state = DeviceState.CONNECTING
         self.log(f"Connecting to {self.config.mac} ...")
 
@@ -78,7 +89,7 @@ class BaseBleDevice(ABC):
         if self.client is not None:
             try:
                 if self.client.is_connected:
-                    await self.client.disconnect()
+                    await asyncio.wait_for(self.client.disconnect(), timeout=5.0)
                     self.log("Disconnected.")
             except Exception as e:
                 self.log(f"Disconnect error: {e}")
