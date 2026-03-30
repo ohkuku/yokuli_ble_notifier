@@ -854,12 +854,10 @@ class StatusServer:
         with open(os.path.join(_WEBAPP_INSTALL_DIR, "package.json"), "w") as fh:
             _json.dump(pkg, fh, indent=2)
         html_content = (
-            "<!DOCTYPE html>\n<html><head><title>BLE Monitor</title>"
-            "<style>*{margin:0;padding:0}html,body{height:100%;overflow:hidden}</style>"
-            "</head><body>"
-            '<iframe id="f" style="width:100%;height:100vh;border:none"></iframe>'
+            "<!DOCTYPE html>\n<html><head><title>BLE Monitor</title></head>"
+            "<body><p style='font-family:sans-serif;padding:20px'>正在跳转...</p>"
             "<script>"
-            "document.getElementById('f').src='http://'+location.hostname+':8080';"
+            "window.location.replace('http://'+location.hostname+':8080');"
             "</script>"
             "</body></html>\n"
         )
