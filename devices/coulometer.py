@@ -69,8 +69,8 @@ class CoulometerDevice(BaseBleDevice):
                 return False
 
         if current_a is not None:
-            # 你当前日志里正常电流大约在几安培范围，先给一个宽松上限
-            if abs(current_a) > 10.0:
+            # 放电约几安培，充电最高可达 20A+（太阳能），保守上限 30A
+            if abs(current_a) > 30.0:
                 self.log(
                     f"Suspicious frame dropped (current out of range): {frame.hex()} "
                     f"-> current={current_a}, voltage={voltage_v}, power={power_w}",
@@ -129,15 +129,22 @@ class CoulometerDevice(BaseBleDevice):
                     )
                     return None
 
-                curr_val = parse_decimal_bytes(frame[1:dir_idx], decimals=2, min_digits=3)
-                if curr_val is not None:
-                    current_a = -curr_val if frame[dir_idx] == 0xC1 else curr_val
-                    got_current_frame = True
+                val1 = parse_decimal_bytes(frame[1:dir_idx], decimals=2, min_digits=3)
+                val2 = parse_decimal_bytes(frame[dir_idx + 1:d8_idx], decimals=2, min_digits=3)
 
-                power_val = parse_decimal_bytes(frame[dir_idx + 1:d8_idx], decimals=2, min_digits=3)
-                if power_val is not None and current_a is not None and abs(current_a) > 0.01:
-                    voltage_v = round(power_val / abs(current_a), 2)
-                    power_w = round(voltage_v * current_a, 2)
+                if val1 is not None and val2 is not None and val1 > 0.01:
+                    if frame[dir_idx] == 0xC0:
+                        # 充电帧: val1 = 电压, val2 = 功率 (绝对值)
+                        # 协议在充电方向时字段顺序与放电相反
+                        voltage_v = round(val1, 2)
+                        power_w = round(val2, 2)
+                        current_a = round(val2 / val1, 2)   # 正值 = 充电
+                    else:
+                        # 放电帧 (0xC1): val1 = 电流 (绝对值), val2 = 功率 (绝对值)
+                        current_a = -val1                   # 负值 = 放电
+                        voltage_v = round(val2 / val1, 2)
+                        power_w = round(-val2, 2)
+                    got_current_frame = True
 
                     if not self._is_plausible_measurement(current_a, voltage_v, power_w, frame):
                         return None
