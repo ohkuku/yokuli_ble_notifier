@@ -216,9 +216,23 @@ section-title {
   max-width: 90vw; text-align: center; z-index: 100;
 }
 #toast.show { opacity: 1; }
+/* ── Signal K back bar ── */
+#sk-bar {
+  display: none;
+  align-items: center; justify-content: space-between;
+  background: #1e3a5f; border: 1px solid #1d4ed8;
+  border-radius: 10px; padding: 8px 14px;
+  margin-bottom: 14px; font-size: 0.75rem; color: #93c5fd;
+}
+#sk-bar a { color: #60a5fa; text-decoration: none; font-weight: 600; }
+#sk-bar a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
+<div id="sk-bar">
+  <span id="sk-bar-msg"></span>
+  <a id="sk-bar-link" href="#">← 返回 Signal K 面板</a>
+</div>
 <header>
   <h1>yokuli BLE 蓝牙数据监控器</h1>
   <div class="ts" id="ts">正在连接...</div>
@@ -495,6 +509,29 @@ async function poll() {
 
 poll();
 setInterval(poll, 2000);
+
+(function() {
+  const fromSkHash = location.hash === '#from_signalk';
+  const fromSkRef  = document.referrer && new URL(document.referrer).port === '3000';
+  const bar  = document.getElementById('sk-bar');
+  const msg  = document.getElementById('sk-bar-msg');
+  const link = document.getElementById('sk-bar-link');
+  const skUrl = 'http://' + location.hostname + ':3000';
+
+  if (fromSkHash || fromSkRef) {
+    bar.style.display = 'flex';
+    msg.textContent = '通过 Signal K Web App 跳转而来';
+    link.href = skUrl;
+    // Clean up hash without adding history entry
+    if (fromSkHash) history.replaceState(null, '', location.pathname);
+  } else {
+    // Not from Signal K — show a subtle hint in case user wants to go there
+    bar.style.display = 'flex';
+    msg.textContent = 'Signal K 面板：';
+    link.textContent = skUrl;
+    link.href = skUrl;
+  }
+})();
 </script>
 </body>
 </html>"""
@@ -857,7 +894,7 @@ class StatusServer:
             "<!DOCTYPE html>\n<html><head><title>BLE Monitor</title></head>"
             "<body><p style='font-family:sans-serif;padding:20px'>正在跳转...</p>"
             "<script>"
-            "window.location.replace('http://'+location.hostname+':8080');"
+            "window.location.replace('http://'+location.hostname+':8080/#from_signalk');"
             "</script>"
             "</body></html>\n"
         )
