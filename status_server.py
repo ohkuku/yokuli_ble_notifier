@@ -666,7 +666,10 @@ class StatusServer:
                     )
 
             # Route
-            if method == "GET" and path == "/":
+            if method == "OPTIONS":
+                # Chrome Private Network Access preflight — respond immediately
+                await self._respond(writer, 200, "text/plain", b"")
+            elif method == "GET" and path == "/":
                 await self._respond(writer, 200, "text/html; charset=utf-8",
                                     _HTML.encode("utf-8"))
             elif method == "GET" and path == "/api/status":
@@ -705,6 +708,9 @@ class StatusServer:
             f"Content-Type: {content_type}\r\n"
             f"Content-Length: {len(body)}\r\n"
             f"Cache-Control: no-cache\r\n"
+            f"Access-Control-Allow-Origin: *\r\n"
+            f"Access-Control-Allow-Private-Network: true\r\n"
+            f"Access-Control-Allow-Headers: *\r\n"
             f"\r\n"
         ).encode("utf-8")
         writer.write(header + body)
