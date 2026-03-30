@@ -15,6 +15,10 @@ from config_loader import BluetoothConfig
 
 logger = logging.getLogger("status")
 
+_WEBAPP_INSTALL_DIR = (
+    "/home/yokuli/signalk-server/signalk-data/node_modules/yokuli-ble-monitor"
+)
+
 
 class _RingLogHandler(logging.Handler):
     """In-memory ring buffer handler for dashboard log panes."""
@@ -230,9 +234,17 @@ section-title {
 </div>
 
 <div class="controls">
-  <div class="controls-title">进程控制</div>
+  <div class="controls-title">版本管理</div>
   <div class="ctrl-btns">
     <button class="btn btn-blue"   onclick="doUpdateFromGit()">拉取 GitHub 更新并重启</button>
+    <button class="btn btn-blue"   id="btn-install-webapp" onclick="doInstallWebapp()">安装 Signal K Web App</button>
+    <button class="btn btn-gray"   onclick="doDeleteWebappHint()">删除 Web App</button>
+    <span id="webapp-status" style="font-size:0.7rem;color:#64748b;align-self:center"></span>
+  </div>
+</div>
+<div class="controls">
+  <div class="controls-title">进程控制</div>
+  <div class="ctrl-btns">
     <button class="btn btn-orange" onclick="doRestartService()">重启进程</button>
     <button class="btn btn-red"    onclick="doRebootPi()">重启树莓派</button>
   </div>
@@ -243,14 +255,20 @@ section-title {
 <div class="logs-panel">
   <div class="logs-toolbar">
     <div class="logs-title">运行日志</div>
-    <label class="switch">
-      <input type="checkbox" id="toggle-raw" onchange="toggleRawPane()">
-      显示原始报文（DEBUG）
-    </label>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-gray" style="padding:4px 10px;font-size:0.67rem" onclick="copyLog('normal')">复制最近100条</button>
+      <label class="switch">
+        <input type="checkbox" id="toggle-raw" onchange="toggleRawPane()">
+        显示原始报文（DEBUG）
+      </label>
+    </div>
   </div>
   <div id="normal-log" class="logbox">暂无日志</div>
   <div id="raw-wrap" style="display:none; margin-top:10px;">
-    <div class="logs-title" style="margin-bottom:8px;">原始报文</div>
+    <div class="logs-toolbar" style="margin-bottom:8px;">
+      <div class="logs-title">原始报文</div>
+      <button class="btn btn-gray" style="padding:4px 10px;font-size:0.67rem" onclick="copyLog('raw')">复制最近100条</button>
+    </div>
     <div id="raw-log" class="logbox raw">暂无原始报文</div>
   </div>
 </div>
@@ -416,6 +434,25 @@ function doRebootPi() {
     '二次确认：树莓派将立即重启，确定吗？'
   );
 }
+function doInstallWebapp() {
+  postAction(
+    {action:'install_signalk_webapp'},
+    '确认安装 Signal K Web App？\n\n将写入文件到 signalk-data/node_modules/yokuli-ble-monitor/ 并重启 signalk 容器（约需 10 秒）。'
+  );
+}
+function doDeleteWebappHint() {
+  alert('删除方法：\n请前往 Signal K 管理页面 → Appstore / Webapps，找到 yokuli-ble-monitor 并删除。\n\n也可手动删除目录：\n~/signalk-server/signalk-data/node_modules/yokuli-ble-monitor/');
+}
+function copyLog(type) {
+  const elId = type === 'raw' ? 'raw-log' : 'normal-log';
+  const el = document.getElementById(elId);
+  const lines = el.textContent.split('\n').filter(l => l.trim());
+  const last100 = lines.slice(-100).join('\n');
+  navigator.clipboard.writeText(last100).then(
+    () => toast('✓ 已复制 ' + Math.min(lines.length, 100) + ' 条日志'),
+    () => toast('✗ 复制失败，请手动选择文本')
+  );
+}
 
 async function poll() {
   try {
@@ -426,6 +463,11 @@ async function poll() {
     if (data.bluetooth) renderBluetooth(data.bluetooth);
     setLogLines('normal-log', data.logs || [], 'normal');
     setLogLines('raw-log', data.raw_logs || [], 'raw');
+    const wsEl = document.getElementById('webapp-status');
+    if (wsEl) {
+      wsEl.textContent = data.webapp_installed ? '✓ 已安装' : '未安装';
+      wsEl.style.color = data.webapp_installed ? '#22c55e' : '#64748b';
+    }
     document.getElementById('ts').textContent =
       '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12:false});
   } catch(e) {
@@ -468,6 +510,13 @@ class StatusServer:
         self._dashboard_logs: Deque[str] = deque(maxlen=180)
         self._dashboard_raw_logs: Deque[str] = deque(maxlen=180)
         self._ring_handler: Optional[_RingLogHandler] = None
+
+    # ── Helpers ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _check_webapp_installed() -> bool:
+        import os
+        return os.path.isfile(os.path.join(_WEBAPP_INSTALL_DIR, "index.html"))
 
     # ── Snapshot ────────────────────────────────────────────────────────────
 
@@ -515,6 +564,7 @@ class StatusServer:
             },
             "logs": list(self._dashboard_logs),
             "raw_logs": raw_logs,
+            "webapp_installed": self._check_webapp_installed(),
         }
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -657,6 +707,11 @@ class StatusServer:
             logger.info("[action] reboot_pi triggered")
             return {"ok": True, "message": "树莓派重启中，2 秒后执行"}
 
+        if action == "install_signalk_webapp":
+            asyncio.create_task(self._do_install_webapp())
+            logger.info("[action] install_signalk_webapp triggered")
+            return {"ok": True, "message": "Signal K Web App 安装中，完成后将重启 signalk 容器..."}
+
         return {"ok": False, "error": f"Unknown action: {action}"}
 
     # ── Action implementations ───────────────────────────────────────────────
@@ -712,6 +767,48 @@ class StatusServer:
             await asyncio.wait_for(proc.wait(), timeout=10.0)
         except Exception as exc:
             logger.error(f"Reboot failed: {exc}")
+
+    async def _do_install_webapp(self) -> None:
+        """Write Signal K webapp files and restart the signalk docker container."""
+        import json as _json
+        import os
+        os.makedirs(_WEBAPP_INSTALL_DIR, exist_ok=True)
+        pkg = {
+            "name": "yokuli-ble-monitor",
+            "version": "1.0.0",
+            "description": "yokuli BLE Monitor dashboard",
+            "keywords": ["signalk-webapp"],
+            "main": "index.html",
+        }
+        with open(os.path.join(_WEBAPP_INSTALL_DIR, "package.json"), "w") as fh:
+            _json.dump(pkg, fh, indent=2)
+        html_content = (
+            "<!DOCTYPE html>\n<html><head><title>BLE Monitor</title>"
+            "<style>*{margin:0;padding:0}html,body{height:100%;overflow:hidden}</style>"
+            "</head><body>"
+            '<iframe src="http://yokuli:8080"'
+            ' style="width:100%;height:100vh;border:none"></iframe>'
+            "</body></html>\n"
+        )
+        with open(os.path.join(_WEBAPP_INSTALL_DIR, "index.html"), "w") as fh:
+            fh.write(html_content)
+        logger.info("Signal K webapp files written. Restarting signalk docker container ...")
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                "docker restart signalk",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+            if proc.returncode != 0:
+                logger.error(
+                    f"docker restart signalk failed: "
+                    f"{(err or out).decode(errors='replace').strip()}"
+                )
+            else:
+                logger.info("signalk container restarted successfully.")
+        except Exception as exc:
+            logger.error(f"docker restart signalk failed: {exc}")
 
     async def _do_update_from_git(self) -> None:
         """

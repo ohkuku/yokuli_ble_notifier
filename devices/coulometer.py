@@ -163,6 +163,16 @@ class CoulometerDevice(BaseBleDevice):
 
                 ah_val = parse_decimal_bytes(frame[1:cap_idx], decimals=3, min_digits=4)
                 if ah_val is not None:
+                    if (
+                        self.config.battery_capacity_ah
+                        and ah_val > self.config.battery_capacity_ah * 1.1
+                    ):
+                        self.log(
+                            f"Suspicious capacity frame dropped (ah out of range): {frame.hex()} "
+                            f"-> ah_val={ah_val}, capacity={self.config.battery_capacity_ah}",
+                            logging.WARNING,
+                        )
+                        return None
                     remaining_ah = ah_val
                     got_capacity_frame = True
 
