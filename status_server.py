@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import subprocess
 import time
 from collections import deque
 from typing import TYPE_CHECKING, Deque, List, Optional, Tuple
@@ -221,6 +222,7 @@ section-title {
 <header>
   <h1>yokuli BLE 蓝牙数据监控器</h1>
   <div class="ts" id="ts">正在连接...</div>
+  <div class="ts" id="git-info" style="margin-top:2px"></div>
 </header>
 
 <div class="bt-panel" id="bt-panel">
@@ -236,7 +238,8 @@ section-title {
 <div class="controls">
   <div class="controls-title">版本管理</div>
   <div class="ctrl-btns">
-    <button class="btn btn-blue"   onclick="doUpdateFromGit()">拉取 GitHub 更新并重启</button>
+    <button class="btn btn-gray"   onclick="doPullOnly()">只拉取更新</button>
+    <button class="btn btn-blue"   onclick="doUpdateFromGit()">拉取并重启</button>
     <button class="btn btn-blue"   id="btn-install-webapp" onclick="doInstallWebapp()">安装 Signal K Web App</button>
     <button class="btn btn-gray"   onclick="doDeleteWebappHint()">删除 Web App</button>
     <span id="webapp-status" style="font-size:0.7rem;color:#64748b;align-self:center"></span>
@@ -434,6 +437,9 @@ function doRebootPi() {
     '二次确认：树莓派将立即重启，确定吗？'
   );
 }
+function doPullOnly() {
+  postAction({action:'pull_only'}, '确认拉取 GitHub main 更新？\n\n只更新文件，不重启进程。');
+}
 function doInstallWebapp() {
   postAction(
     {action:'install_signalk_webapp'},
@@ -467,6 +473,18 @@ async function poll() {
     if (wsEl) {
       wsEl.textContent = data.webapp_installed ? '✓ 已安装' : '未安装';
       wsEl.style.color = data.webapp_installed ? '#22c55e' : '#64748b';
+    }
+    const btnInstall = document.getElementById('btn-install-webapp');
+    if (btnInstall) btnInstall.textContent = data.webapp_installed ? '升级 Signal K Web App' : '安装 Signal K Web App';
+    if (data.git) {
+      const gitEl = document.getElementById('git-info');
+      if (gitEl) {
+        if (data.git.url) {
+          gitEl.innerHTML = '运行版本：<a href="' + data.git.url + '" target="_blank" style="color:#60a5fa;text-decoration:none">' + data.git.hash + '</a>';
+        } else {
+          gitEl.textContent = '运行版本：' + data.git.hash;
+        }
+      }
     }
     document.getElementById('ts').textContent =
       '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12:false});
@@ -518,6 +536,24 @@ class StatusServer:
         import os
         return os.path.isfile(os.path.join(_WEBAPP_INSTALL_DIR, "index.html"))
 
+    @staticmethod
+    def _git_info() -> dict:
+        try:
+            short = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL, timeout=3,
+            ).decode().strip()
+            full = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                stderr=subprocess.DEVNULL, timeout=3,
+            ).decode().strip()
+            return {
+                "hash": short,
+                "url": f"https://github.com/ohkuku/yokuli_ble_notifier/commit/{full}",
+            }
+        except Exception:
+            return {"hash": "unknown", "url": ""}
+
     # ── Snapshot ────────────────────────────────────────────────────────────
 
     def _snapshot(self) -> dict:
@@ -565,6 +601,7 @@ class StatusServer:
             "logs": list(self._dashboard_logs),
             "raw_logs": raw_logs,
             "webapp_installed": self._check_webapp_installed(),
+            "git": self._git_info(),
         }
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -707,6 +744,11 @@ class StatusServer:
             logger.info("[action] reboot_pi triggered")
             return {"ok": True, "message": "树莓派重启中，2 秒后执行"}
 
+        if action == "pull_only":
+            asyncio.create_task(self._do_pull_only())
+            logger.info("[action] pull_only triggered")
+            return {"ok": True, "message": "正在拉取 GitHub main 更新（不重启）..."}
+
         if action == "install_signalk_webapp":
             asyncio.create_task(self._do_install_webapp())
             logger.info("[action] install_signalk_webapp triggered")
@@ -768,6 +810,29 @@ class StatusServer:
         except Exception as exc:
             logger.error(f"Reboot failed: {exc}")
 
+    async def _do_pull_only(self) -> None:
+        """Pull latest code from GitHub main branch without restarting."""
+        await asyncio.sleep(0.5)
+        logger.info("Pulling from GitHub main (no restart) ...")
+        cmd = "git fetch origin main && git pull --ff-only origin main"
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+            if proc.returncode != 0:
+                logger.error(
+                    f"pull_only failed ({proc.returncode}): "
+                    f"{(err or out).decode(errors='replace').strip()}"
+                )
+            else:
+                result = (out or err).decode(errors="replace").strip()
+                logger.info(f"pull_only completed: {result or 'Already up to date.'}")
+        except Exception as exc:
+            logger.error(f"pull_only failed: {exc}")
+
     async def _do_install_webapp(self) -> None:
         """Write Signal K webapp files and restart the signalk docker container."""
         import json as _json
@@ -786,8 +851,10 @@ class StatusServer:
             "<!DOCTYPE html>\n<html><head><title>BLE Monitor</title>"
             "<style>*{margin:0;padding:0}html,body{height:100%;overflow:hidden}</style>"
             "</head><body>"
-            '<iframe src="http://yokuli:8080"'
-            ' style="width:100%;height:100vh;border:none"></iframe>'
+            '<iframe id="f" style="width:100%;height:100vh;border:none"></iframe>'
+            "<script>"
+            "document.getElementById('f').src='http://'+location.hostname+':8080';"
+            "</script>"
             "</body></html>\n"
         )
         with open(os.path.join(_WEBAPP_INSTALL_DIR, "index.html"), "w") as fh:
