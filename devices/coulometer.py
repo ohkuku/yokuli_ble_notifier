@@ -167,12 +167,13 @@ class CoulometerDevice(BaseBleDevice):
                         self.config.battery_capacity_ah
                         and ah_val > self.config.battery_capacity_ah * 1.1
                     ):
+                        # Junctek reports >capacity when battery is full — clamp to full
                         self.log(
-                            f"Suspicious capacity frame dropped (ah out of range): {frame.hex()} "
-                            f"-> ah_val={ah_val}, capacity={self.config.battery_capacity_ah}",
-                            logging.WARNING,
+                            f"[DEBUG] Capacity frame clamped to full: {frame.hex()} "
+                            f"-> ah_val={ah_val} clamped to {self.config.battery_capacity_ah}",
+                            logging.DEBUG,
                         )
-                        return None
+                        ah_val = self.config.battery_capacity_ah
                     remaining_ah = ah_val
                     got_capacity_frame = True
 
