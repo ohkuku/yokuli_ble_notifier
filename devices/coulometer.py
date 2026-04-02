@@ -27,6 +27,9 @@ class CoulometerDevice(BaseBleDevice):
         self.last_current = 0.0
         self.last_remaining_ah: Optional[float] = None
         self.last_capacity_update_time: Optional[float] = None
+        # Separate charge/discharge caches for net-current computation
+        self._last_charge_a: Optional[float] = None    # from C0 frames, positive
+        self._last_discharge_a: Optional[float] = None  # from C1 frames, negative
 
     def notification_handler(self, characteristic, data: bytearray) -> None:
         self.buffer.extend(data)
@@ -135,15 +138,20 @@ class CoulometerDevice(BaseBleDevice):
                 if val1 is not None and val2 is not None and val1 > 0.01:
                     if frame[dir_idx] == 0xC0:
                         # 充电帧: val1 = 电压, val2 = 功率 (绝对值)
-                        # 协议在充电方向时字段顺序与放电相反
+                        charge_a = round(val2 / val1, 2)    # 正值
+                        self._last_charge_a = charge_a
                         voltage_v = round(val1, 2)
-                        power_w = round(val2, 2)
-                        current_a = round(val2 / val1, 2)   # 正值 = 充电
+                        # 净电流 = 太阳能充入 + 负载放出（两者同时存在时）
+                        current_a = round(charge_a + (self._last_discharge_a or 0.0), 2)
+                        power_w = round(current_a * voltage_v, 2)
                     else:
                         # 放电帧 (0xC1): val1 = 电流 (绝对值), val2 = 功率 (绝对值)
-                        current_a = -val1                   # 负值 = 放电
+                        discharge_a = -val1                 # 负值
+                        self._last_discharge_a = discharge_a
                         voltage_v = round(val2 / val1, 2)
-                        power_w = round(-val2, 2)
+                        # 净电流 = 太阳能充入 + 负载放出
+                        current_a = round((self._last_charge_a or 0.0) + discharge_a, 2)
+                        power_w = round(current_a * voltage_v, 2)
                     got_current_frame = True
 
                     if not self._is_plausible_measurement(current_a, voltage_v, power_w, frame):
