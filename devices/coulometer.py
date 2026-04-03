@@ -138,43 +138,32 @@ class CoulometerDevice(BaseBleDevice):
 
                 if val1 is not None and val2 is not None and val1 > 0.01:
                     if frame[dir_idx] == 0xC0:
-                        # 充电帧: val1=电压, val2=功率
-                        # C0 和 C1 同时出现时，两者报告同一个充电电流（不同格式）
-                        # 用 C0 作为充电电流的权威来源
-                        charge_a = round(val2 / val1, 2)
-                        self._last_charge_a = charge_a
+                        # C0 帧：电压 + 功率格式，记录充电时刻用于判断方向
+                        # C0 和 C1 同时出现时，C1 val1 才是真正的电池电流（更直接）
+                        # C0 仅用于：更新电压、记录"有太阳能"时间戳
                         self._last_charge_time = now
                         voltage_v = round(val1, 2)
-                        current_a = charge_a              # 正值 = 充电
-                        power_w = round(val2, 2)
+                        # charge_a 仍保存用于 Signal K charge 路径
+                        charge_a = round(val2 / val1, 2)
+                        self._last_charge_a = charge_a
                         result["charge_a"] = charge_a
+                        # 不从 C0 更新 current_a（由 C1 负责）
                     else:
-                        # C1 帧：两种含义取决于 C0 是否最近出现
-                        # 若 C0 在 5 秒内出现过 → 充电中，C1 是重复的充电数据，忽略其电流
-                        # 若 C0 超过 5 秒没出现 → 纯放电状态，C1 才是真正的放电电流
+                        # C1 帧：val1 = 电池电流（绝对值），val2 = 电池功率
+                        # C1 始终是电池端的实际电流，比 C0 推算更准确
                         voltage_v = round(val2 / val1, 2)
-                        # 充电判断双重条件：
-                        # 1. C0 在 30 秒内出现过（防 BLE 丢包短暂触发误判）
-                        # 2. 或 C1 的电流与上次 C0 充电电流接近（>50%）
-                        #    → 说明两者报告的是同一个充电电流
-                        c0_recent = (
-                            self._last_charge_time is not None
-                            and (now - self._last_charge_time) < 30.0
-                        )
-                        c1_looks_like_charge = (
-                            self._last_charge_a is not None
-                            and val1 > self._last_charge_a * 0.5
-                        )
-                        charging = c0_recent or c1_looks_like_charge
-                        if charging:
-                            # 充电时 C1 与 C0 报告同一电流，忽略，不更新 current_a
+                        battery_a = round(val1, 2)
+
+                        if self._last_charge_time is not None and (now - self._last_charge_time) < 300.0:
+                            # 5 分钟内见过 C0 → 太阳能充电中 → 正值
+                            current_a = battery_a
+                        elif self._last_charge_time is None:
+                            # 从未见过 C0（刚启动）→ 暂不判断，跳过
                             pass
                         else:
-                            discharge_a = -val1           # 负值 = 放电
-                            self._last_discharge_a = discharge_a
-                            current_a = discharge_a
-                            power_w = round(-val2, 2)
-                            result["discharge_a"] = round(val1, 2)
+                            # C0 超过 5 分钟未出现 → 纯放电
+                            current_a = -battery_a
+                            result["discharge_a"] = battery_a
                     got_current_frame = current_a is not None
 
                     if current_a is not None and not self._is_plausible_measurement(current_a, voltage_v, power_w, frame):
