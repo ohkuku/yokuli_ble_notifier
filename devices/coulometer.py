@@ -144,6 +144,7 @@ class CoulometerDevice(BaseBleDevice):
                         # 净电流 = 太阳能充入 + 负载放出（两者同时存在时）
                         current_a = round(charge_a + (self._last_discharge_a or 0.0), 2)
                         power_w = round(current_a * voltage_v, 2)
+                        result["charge_a"] = charge_a
                     else:
                         # 放电帧 (0xC1): val1 = 电流 (绝对值), val2 = 功率 (绝对值)
                         discharge_a = -val1                 # 负值
@@ -152,6 +153,7 @@ class CoulometerDevice(BaseBleDevice):
                         # 净电流 = 太阳能充入 + 负载放出
                         current_a = round((self._last_charge_a or 0.0) + discharge_a, 2)
                         power_w = round(current_a * voltage_v, 2)
+                        result["discharge_a"] = round(val1, 2)  # 放出电流（正值）
                     got_current_frame = True
 
                     if not self._is_plausible_measurement(current_a, voltage_v, power_w, frame):
@@ -247,6 +249,18 @@ class CoulometerDevice(BaseBleDevice):
             values.append({
                 "path": "electrical.batteries.house.current",
                 "value": parsed["current_a"],
+            })
+
+        if "charge_a" in parsed:
+            values.append({
+                "path": "electrical.batteries.house.current.charge",
+                "value": parsed["charge_a"],
+            })
+
+        if "discharge_a" in parsed:
+            values.append({
+                "path": "electrical.batteries.house.current.discharge",
+                "value": -parsed["discharge_a"],  # Signal K: negative = discharge
             })
 
         if "power_w" in parsed:

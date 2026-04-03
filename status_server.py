@@ -136,6 +136,7 @@ section-title {
 .lbl { color: #64748b; }
 .val { color: #cbd5e1; }
 .warn { color: #fb923c !important; }
+.meter-section { border-top: 1px solid #334155; padding-top: 8px; margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
 .err  { color: #f87171 !important; }
 /* ── Buttons ── */
 .btn {
@@ -363,6 +364,34 @@ function renderBluetooth(bt) {
   ).join('');
 }
 
+function renderReadings(r) {
+  if (!r || Object.keys(r).length === 0) return '';
+  let html = '<div class="meter-section">';
+  if (r.voltage_v != null)
+    html += `<div class="row"><span class="lbl">电压</span><span class="val">${r.voltage_v.toFixed(2)} V</span></div>`;
+  if (r.charge_a != null && r.discharge_a != null) {
+    const net = r.current_a != null ? r.current_a : (r.charge_a - r.discharge_a);
+    const netStr = net >= 0 ? `+${net.toFixed(2)}` : net.toFixed(2);
+    const netColor = net >= 0.5 ? '#4ade80' : net <= -0.5 ? '#f87171' : '#94a3b8';
+    html += `<div class="row"><span class="lbl">充入（太阳能）</span><span class="val" style="color:#4ade80">+${r.charge_a.toFixed(2)} A</span></div>`;
+    html += `<div class="row"><span class="lbl">放出（负载）</span><span class="val" style="color:#f87171">−${r.discharge_a.toFixed(2)} A</span></div>`;
+    html += `<div class="row"><span class="lbl">净电流</span><span class="val" style="color:${netColor}">${netStr} A</span></div>`;
+  } else if (r.current_a != null) {
+    const netStr = r.current_a >= 0 ? `+${r.current_a.toFixed(2)}` : r.current_a.toFixed(2);
+    const netColor = r.current_a >= 0.5 ? '#4ade80' : r.current_a <= -0.5 ? '#f87171' : '#94a3b8';
+    html += `<div class="row"><span class="lbl">净电流</span><span class="val" style="color:${netColor}">${netStr} A</span></div>`;
+  }
+  if (r.soc != null) {
+    const pct = (r.soc * 100).toFixed(1);
+    const socColor = r.soc > 0.5 ? '#4ade80' : r.soc > 0.2 ? '#facc15' : '#f87171';
+    html += `<div class="row"><span class="lbl">SOC</span><span class="val" style="color:${socColor}">${pct}%`;
+    if (r.remaining_ah != null) html += ` (${r.remaining_ah.toFixed(1)} Ah)`;
+    html += `</span></div>`;
+  }
+  html += '</div>';
+  return html;
+}
+
 function renderCard(d) {
   const color   = COLORS[d.state] || '#6b7280';
   const label   = STATE_LABELS[d.state] || d.state;
@@ -392,6 +421,7 @@ function renderCard(d) {
             <span class="val">${d.signalk_clients}</span></div>
           <div class="row"><span class="lbl">TCP 端口</span>
             <span class="val">${d.tcp_port}</span></div>
+          ${renderReadings(d.readings)}
         </div>
         <div class="card-btns">
           <button class="btn btn-blue" onclick="doDisconnectDevice('${d.key}')">断连重连</button>
@@ -615,6 +645,27 @@ class StatusServer:
             raw_logs.extend(list(self._dashboard_raw_logs)[-40:])
             raw_logs = raw_logs[-180:]
 
+        def _device_readings(d) -> dict:
+            """Extract live meter readings from coulometer/mppt devices if available."""
+            from devices.coulometer import CoulometerDevice
+            if isinstance(d, CoulometerDevice):
+                readings: dict = {}
+                if d.last_voltage is not None:
+                    readings["voltage_v"] = d.last_voltage
+                if d.last_current is not None:
+                    readings["current_a"] = d.last_current
+                if d._last_charge_a is not None:
+                    readings["charge_a"] = d._last_charge_a
+                if d._last_discharge_a is not None:
+                    readings["discharge_a"] = round(abs(d._last_discharge_a), 2)
+                if d.last_remaining_ah is not None and d.config.battery_capacity_ah:
+                    readings["soc"] = round(
+                        max(0.0, min(1.0, d.last_remaining_ah / d.config.battery_capacity_ah)), 3
+                    )
+                    readings["remaining_ah"] = round(d.last_remaining_ah, 2)
+                return readings
+            return {}
+
         return {
             "devices": [
                 {
@@ -626,6 +677,7 @@ class StatusServer:
                     "last_data_age": round(d.seconds_since_last_data(), 1),
                     "tcp_port": d.config.tcp_port,
                     "signalk_clients": d.signalk.client_count if d.signalk else 0,
+                    "readings": _device_readings(d),
                 }
                 for d in self.devices
             ],
