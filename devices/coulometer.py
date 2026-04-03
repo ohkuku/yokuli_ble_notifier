@@ -27,9 +27,10 @@ class CoulometerDevice(BaseBleDevice):
         self.last_current = 0.0
         self.last_remaining_ah: Optional[float] = None
         self.last_capacity_update_time: Optional[float] = None
-        # Separate charge/discharge caches for net-current computation
+        # Last seen values from each frame type (for dashboard display)
         self._last_charge_a: Optional[float] = None    # from C0 frames, positive
         self._last_discharge_a: Optional[float] = None  # from C1 frames, negative
+        self._last_charge_time: Optional[float] = None  # when C0 was last seen
 
     def notification_handler(self, characteristic, data: bytearray) -> None:
         self.buffer.extend(data)
@@ -137,26 +138,37 @@ class CoulometerDevice(BaseBleDevice):
 
                 if val1 is not None and val2 is not None and val1 > 0.01:
                     if frame[dir_idx] == 0xC0:
-                        # 充电帧: val1 = 电压, val2 = 净充电功率
-                        # 库仑计电流传感器已在内部做减法，直接报告净充电电流
-                        charge_a = round(val2 / val1, 2)    # 净充电电流（正值）
+                        # 充电帧: val1=电压, val2=功率
+                        # C0 和 C1 同时出现时，两者报告同一个充电电流（不同格式）
+                        # 用 C0 作为充电电流的权威来源
+                        charge_a = round(val2 / val1, 2)
                         self._last_charge_a = charge_a
+                        self._last_charge_time = now
                         voltage_v = round(val1, 2)
-                        current_a = charge_a
+                        current_a = charge_a              # 正值 = 充电
                         power_w = round(val2, 2)
                         result["charge_a"] = charge_a
                     else:
-                        # 放电帧 (0xC1): val1 = 净放电电流, val2 = 净放电功率
-                        # 库仑计电流传感器已在内部做减法，直接报告净放电电流
-                        discharge_a = -val1                 # 负值
-                        self._last_discharge_a = discharge_a
+                        # C1 帧：两种含义取决于 C0 是否最近出现
+                        # 若 C0 在 5 秒内出现过 → 充电中，C1 是重复的充电数据，忽略其电流
+                        # 若 C0 超过 5 秒没出现 → 纯放电状态，C1 才是真正的放电电流
                         voltage_v = round(val2 / val1, 2)
-                        current_a = discharge_a
-                        power_w = round(-val2, 2)
-                        result["discharge_a"] = round(val1, 2)
-                    got_current_frame = True
+                        charging = (
+                            self._last_charge_time is not None
+                            and (now - self._last_charge_time) < 5.0
+                        )
+                        if charging:
+                            # 充电时 C1 与 C0 报告同一电流，忽略，不更新 current_a
+                            pass
+                        else:
+                            discharge_a = -val1           # 负值 = 放电
+                            self._last_discharge_a = discharge_a
+                            current_a = discharge_a
+                            power_w = round(-val2, 2)
+                            result["discharge_a"] = round(val1, 2)
+                    got_current_frame = current_a is not None
 
-                    if not self._is_plausible_measurement(current_a, voltage_v, power_w, frame):
+                    if current_a is not None and not self._is_plausible_measurement(current_a, voltage_v, power_w, frame):
                         return None
 
             # 容量帧 — 只用 D2 标记；D4 在 D2 帧内部是结构字段，单独出现时是无关帧
