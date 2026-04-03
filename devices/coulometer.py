@@ -157,10 +157,9 @@ class CoulometerDevice(BaseBleDevice):
                     if not self._is_plausible_measurement(current_a, voltage_v, power_w, frame):
                         return None
 
-            # 容量帧
-            cap_tag = 0xD2 if 0xD2 in frame else (0xD4 if 0xD4 in frame else None)
-            if cap_tag is not None:
-                cap_idx = frame.index(cap_tag)
+            # 容量帧 — 只用 D2 标记；D4 在 D2 帧内部是结构字段，单独出现时是无关帧
+            if 0xD2 in frame:
+                cap_idx = frame.index(0xD2)
                 if cap_idx <= 1:
                     self.log(
                         f"Suspicious capacity frame dropped (bad index): {frame.hex()} "
