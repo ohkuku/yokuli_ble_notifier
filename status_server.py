@@ -615,23 +615,6 @@ class StatusServer:
             raw_logs.extend(list(self._dashboard_raw_logs)[-40:])
             raw_logs = raw_logs[-180:]
 
-        def _device_readings(d) -> dict:
-            """Extract live meter readings from coulometer/mppt devices if available."""
-            from devices.coulometer import CoulometerDevice
-            if isinstance(d, CoulometerDevice):
-                readings: dict = {}
-                if d.last_voltage is not None:
-                    readings["voltage_v"] = d.last_voltage
-                if d.last_current is not None:
-                    readings["current_a"] = d.last_current
-                if d.last_remaining_ah is not None and d.config.battery_capacity_ah:
-                    readings["soc"] = round(
-                        max(0.0, min(1.0, d.last_remaining_ah / d.config.battery_capacity_ah)), 3
-                    )
-                    readings["remaining_ah"] = round(d.last_remaining_ah, 2)
-                return readings
-            return {}
-
         return {
             "devices": [
                 {
@@ -643,7 +626,6 @@ class StatusServer:
                     "last_data_age": round(d.seconds_since_last_data(), 1),
                     "tcp_port": d.config.tcp_port,
                     "signalk_clients": d.signalk.client_count if d.signalk else 0,
-                    "readings": _device_readings(d),
                 }
                 for d in self.devices
             ],
