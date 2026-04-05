@@ -27,10 +27,8 @@ class CoulometerDevice(BaseBleDevice):
         self.last_current = 0.0
         self.last_remaining_ah: Optional[float] = None
         self.last_capacity_update_time: Optional[float] = None
-        # Last seen values from each frame type (for dashboard display)
-        self._last_charge_a: Optional[float] = None    # from C0 frames, positive
-        self._last_discharge_a: Optional[float] = None  # from C1 frames, negative
-        self._last_charge_time: Optional[float] = None  # when C0 was last seen
+        # 太阳能活跃时间戳：只有 C0 带显著充电电流（≥1A）时才更新
+        self._last_charge_time: Optional[float] = None
 
     def notification_handler(self, characteristic, data: bytearray) -> None:
         self.buffer.extend(data)
@@ -138,32 +136,23 @@ class CoulometerDevice(BaseBleDevice):
 
                 if val1 is not None and val2 is not None and val1 > 0.01:
                     if frame[dir_idx] == 0xC0:
-                        # C0 帧：电压 + 功率格式，记录充电时刻用于判断方向
-                        # C0 和 C1 同时出现时，C1 val1 才是真正的电池电流（更直接）
-                        # C0 仅用于：更新电压、记录"有太阳能"时间戳
-                        self._last_charge_time = now
+                        # C0 帧：电压 + 功率
+                        # 只有充电电流 ≥ 1A 才算"太阳能活跃"，否则是夜间空闲帧
                         voltage_v = round(val1, 2)
-                        # charge_a 仍保存用于 Signal K charge 路径
                         charge_a = round(val2 / val1, 2)
-                        self._last_charge_a = charge_a
-                        result["charge_a"] = charge_a
-                        # 不从 C0 更新 current_a（由 C1 负责）
+                        if charge_a >= 1.0:
+                            self._last_charge_time = now
+                        # 不从 C0 设置 current_a（由 C1 负责）
                     else:
-                        # C1 帧：val1 = 电池电流（绝对值），val2 = 电池功率
-                        # C1 始终是电池端的实际电流，比 C0 推算更准确
+                        # C1 帧：val1 = 电池电流绝对值，val2 = 功率
                         voltage_v = round(val2 / val1, 2)
                         battery_a = round(val1, 2)
-
-                        if self._last_charge_time is not None and (now - self._last_charge_time) < 300.0:
-                            # 5 分钟内见过 C0 → 太阳能充电中 → 正值
-                            current_a = battery_a
-                        elif self._last_charge_time is None:
-                            # 从未见过 C0（刚启动）→ 暂不判断，跳过
-                            pass
-                        else:
-                            # C0 超过 5 分钟未出现 → 纯放电
-                            current_a = -battery_a
-                            result["discharge_a"] = battery_a
+                        solar_active = (
+                            self._last_charge_time is not None
+                            and (now - self._last_charge_time) < 300.0
+                        )
+                        current_a = battery_a if solar_active else -battery_a
+                        power_w = round(val2, 2) if solar_active else round(-val2, 2)
                     got_current_frame = current_a is not None
 
                     if current_a is not None and not self._is_plausible_measurement(current_a, voltage_v, power_w, frame):
@@ -259,18 +248,6 @@ class CoulometerDevice(BaseBleDevice):
             values.append({
                 "path": "electrical.batteries.house.current",
                 "value": parsed["current_a"],
-            })
-
-        if "charge_a" in parsed:
-            values.append({
-                "path": "electrical.batteries.house.current.charge",
-                "value": parsed["charge_a"],
-            })
-
-        if "discharge_a" in parsed:
-            values.append({
-                "path": "electrical.batteries.house.current.discharge",
-                "value": -parsed["discharge_a"],  # Signal K: negative = discharge
             })
 
         if "power_w" in parsed:
