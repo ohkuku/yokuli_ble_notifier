@@ -624,10 +624,6 @@ class StatusServer:
                     readings["voltage_v"] = d.last_voltage
                 if d.last_current is not None:
                     readings["current_a"] = d.last_current
-                if d._last_charge_a is not None:
-                    readings["charge_a"] = d._last_charge_a
-                if d._last_discharge_a is not None:
-                    readings["discharge_a"] = round(abs(d._last_discharge_a), 2)
                 if d.last_remaining_ah is not None and d.config.battery_capacity_ah:
                     readings["soc"] = round(
                         max(0.0, min(1.0, d.last_remaining_ah / d.config.battery_capacity_ah)), 3
