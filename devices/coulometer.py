@@ -27,8 +27,9 @@ class CoulometerDevice(BaseBleDevice):
         self.last_current = 0.0
         self.last_remaining_ah: Optional[float] = None
         self.last_capacity_update_time: Optional[float] = None
-        # 太阳能活跃时间戳：只有 C0 带显著充电电流（≥1A）时才更新
-        self._last_charge_time: Optional[float] = None
+        # 用 D2 帧的 remaining_ah 趋势判断充放电方向
+        self._prev_remaining_ah: Optional[float] = None
+        self._is_charging: bool = False  # 默认放电，收到 D2 数据后修正
 
     def notification_handler(self, characteristic, data: bytearray) -> None:
         self.buffer.extend(data)
@@ -136,23 +137,15 @@ class CoulometerDevice(BaseBleDevice):
 
                 if val1 is not None and val2 is not None and val1 > 0.01:
                     if frame[dir_idx] == 0xC0:
-                        # C0 帧：电压 + 功率
-                        # 只有充电电流 ≥ 1A 才算"太阳能活跃"，否则是夜间空闲帧
+                        # C0 帧：电压 + 功率，仅用于更新电压
                         voltage_v = round(val1, 2)
-                        charge_a = round(val2 / val1, 2)
-                        if charge_a >= 1.0:
-                            self._last_charge_time = now
-                        # 不从 C0 设置 current_a（由 C1 负责）
                     else:
                         # C1 帧：val1 = 电池电流绝对值，val2 = 功率
+                        # 方向由 D2 remaining_ah 趋势决定（最可靠）
                         voltage_v = round(val2 / val1, 2)
                         battery_a = round(val1, 2)
-                        solar_active = (
-                            self._last_charge_time is not None
-                            and (now - self._last_charge_time) < 300.0
-                        )
-                        current_a = battery_a if solar_active else -battery_a
-                        power_w = round(val2, 2) if solar_active else round(-val2, 2)
+                        current_a = battery_a if self._is_charging else -battery_a
+                        power_w = round(val2, 2) if self._is_charging else round(-val2, 2)
                     got_current_frame = current_a is not None
 
                     if current_a is not None and not self._is_plausible_measurement(current_a, voltage_v, power_w, frame):
@@ -184,6 +177,13 @@ class CoulometerDevice(BaseBleDevice):
                         ah_val = self.config.battery_capacity_ah
                     remaining_ah = ah_val
                     got_capacity_frame = True
+
+                    # 用 remaining_ah 趋势更新充放电方向
+                    if self._prev_remaining_ah is not None:
+                        diff = ah_val - self._prev_remaining_ah
+                        if abs(diff) > 0.005:  # 忽略极小波动（噪声）
+                            self._is_charging = diff > 0
+                    self._prev_remaining_ah = ah_val
 
                     if self.config.battery_capacity_ah:
                         soc = max(0.0, min(1.0, ah_val / self.config.battery_capacity_ah))
